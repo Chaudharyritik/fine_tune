@@ -90,16 +90,8 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
 data_collator = DataCollatorSpeechSeq2SeqWithPadding(
     processor=processor,
-    decoder_start_token_id=processor.tokenizer.model_input_names[0], # Usually decoder_start_token_id is handled by the model, but good to be safe
+    decoder_start_token_id=processor.tokenizer.bos_token_id
 )
-# Note: processor.tokenizer.bos_token_id might be what we want if we were manually shifting, 
-# but the collator above is standard for Whisper. 
-# Actually, for Whisper, the decoder_start_token_id is usually not needed in the collator 
-# if we rely on the model to shift tokens, but let's keep the standard implementation.
-# A simpler collator often works too. Let's stick to the one that was roughly there or the standard one.
-# The previous one was 'WhisperCollator'. I'll use a robust one.
-# Re-instantiating the collator to be sure.
-data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor, decoder_start_token_id=model_id) # Placeholder, fixed below
 
 # 5. Load Model with 8-bit Quantization and LoRA
 print("Loading model with 8-bit quantization...")
@@ -184,7 +176,7 @@ trainer = Seq2SeqTrainer(
     eval_dataset=dataset["test"],
     data_collator=data_collator,
     compute_metrics=compute_metrics,
-    tokenizer=processor.feature_extractor,
+    processing_class=processor.feature_extractor,
 )
 
 print("Starting training...")
