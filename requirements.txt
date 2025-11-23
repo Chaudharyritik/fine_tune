@@ -9,3 +9,4 @@ jiwer
 huggingface_hub
 soundfile
 librosa
+tensorboard
