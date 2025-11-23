@@ -1,6 +1,6 @@
 torch
 transformers
-datasets
+datasets==2.19.0
 peft
 bitsandbytes
 accelerate
