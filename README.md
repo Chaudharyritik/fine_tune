@@ -9,12 +9,18 @@ This repository contains a script to fine-tune `openai/whisper-large-v3-turbo` o
 
 ## Setup
 
-1.  **Install Dependencies:**
+1.  **Create Virtual Environment (Recommended):**
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
+
+2.  **Install Dependencies:**
     ```bash
     pip install -r requirements.txt
     ```
 
-2.  **Login to Hugging Face:**
+3.  **Login to Hugging Face:**
     You need to be logged in to access models and datasets.
     ```bash
     huggingface-cli login
