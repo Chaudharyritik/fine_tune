@@ -23,7 +23,8 @@ except Exception as e:
 
 print("Loading Google FLEURS (Hindi) dataset...")
 # FLEURS is open and reliable.
-dataset = load_dataset("google/fleurs", "hi_in", split="train+validation")
+# trust_remote_code=True is required for datasets with scripts in newer datasets versions
+dataset = load_dataset("google/fleurs", "hi_in", split="train+validation", trust_remote_code=True)
 
 print(f"Dataset loaded: {dataset}")
 
