@@ -1,0 +1,15 @@
+# Models (Too large for GitHub)
+whisper-hindi-v1/
+whisper-hindi-ct2/
+
+# Python
+__pycache__/
+*.pyc
+
+# System
+.DS_Store
+
+# Virtual Environment
+venv/
+env/
+.env

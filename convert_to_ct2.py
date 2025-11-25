@@ -12,12 +12,43 @@ print("This will create an optimized model for faster inference on CPU/GPU")
 try:
     subprocess.run([
         "ct2-transformers-converter",
-        "--model", "./whisper-hindi-merged",
+        "--model", "./whisper-hindi-v1",
         "--output_dir", "./whisper-hindi-ct2",
-        "--quantization", "int8"
+        "--quantization", "int8",
+        "--force"
     ], check=True)
     
     print("\n✅ Model converted successfully!")
+    
+    # --- Auto-Fix Configuration ---
+    import json
+    import os
+    
+    config_path = "./whisper-hindi-ct2/config.json"
+    if os.path.exists(config_path):
+        print("🔧 Applying configuration fix...")
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        # Ensure standard Whisper tokens are set
+        # These are sometimes missing after conversion
+        changes_made = False
+        if "bos_token_id" not in config:
+            config["bos_token_id"] = 50258
+            changes_made = True
+        if "eos_token_id" not in config:
+            config["eos_token_id"] = 50257
+            changes_made = True
+        if "pad_token_id" not in config:
+            config["pad_token_id"] = 50257
+            changes_made = True
+            
+        if changes_made:
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            print("  -> Config patched with missing token IDs")
+    # ------------------------------
+
     print("CTranslate2 model saved to: ./whisper-hindi-ct2")
     print("\nTo use the CTranslate2 model:")
     print("  from faster_whisper import WhisperModel")
