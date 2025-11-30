@@ -311,27 +311,28 @@ def compute_metrics(pred):
 training_args = Seq2SeqTrainingArguments(
     output_dir="./whisper-hindi-cv-lora",
     per_device_train_batch_size=8,
-    gradient_accumulation_steps=2,
-    learning_rate=5e-4,  # Lower learning rate for continued training
-    warmup_steps=100,
-    max_steps=2000,  # More steps for better convergence
+    gradient_accumulation_steps=4,  # Increased to stabilize training
+    learning_rate=1e-5,  # Significantly lower learning rate for fine-tuning
+    warmup_steps=50,
+    max_steps=2000,
+    lr_scheduler_type="linear",  # Linear decay
     gradient_checkpointing=True,
-    bf16=True,  # BFloat16 for stability
+    bf16=True,
     eval_strategy="steps",
     per_device_eval_batch_size=8,
     predict_with_generate=True,
     generation_max_length=225,
-    save_steps=200,
-    eval_steps=200,
-    logging_steps=50,
+    save_steps=100,  # More frequent saves
+    eval_steps=100,  # More frequent eval
+    logging_steps=25,
     report_to=["tensorboard"],
     load_best_model_at_end=True,
-    metric_for_best_model="wer",  # Use WER as primary metric
+    metric_for_best_model="wer",
     greater_is_better=False,
     push_to_hub=False,
     remove_unused_columns=False, 
     label_names=["labels"],
-    save_total_limit=3,  # Keep only last 3 checkpoints
+    save_total_limit=3,
 )
 
 # 8. Trainer
