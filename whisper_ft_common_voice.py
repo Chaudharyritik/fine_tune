@@ -1,5 +1,5 @@
 import torch
-from datasets import load_dataset, Audio
+from datasets import load_dataset, Audio, Dataset, concatenate_datasets
 from transformers import (
     WhisperForConditionalGeneration,
     WhisperProcessor,
@@ -10,8 +10,19 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import BitsAndBytesConfig
 import evaluate
 from dataclasses import dataclass
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Union, Optional
 import jiwer
+import os
+import pandas as pd
+import soundfile as sf
+import numpy as np
+
+# Configuration
+LOCAL_CV_PATH = os.getenv("LOCAL_CV_PATH", "/home/fine_tune/cv-corpus-23.0-2025-09-05/hi")
+MIN_AUDIO_DURATION = 0.1  # seconds
+MAX_AUDIO_DURATION = 30.0  # seconds
+MIN_TRANSCRIPTION_LENGTH = 1  # characters
+MAX_TRANSCRIPTION_LENGTH = 500  # characters
 
 # 1. Load Dataset (Common Voice - Hindi)
 from huggingface_hub import whoami
@@ -21,9 +32,182 @@ try:
 except Exception as e:
     print(f"Not logged in or error checking auth: {e}")
 
+# Validation Functions
+def is_valid_sample(audio_path: Optional[str] = None, audio_array: Optional[np.ndarray] = None, 
+                    sampling_rate: Optional[int] = None, transcription: Optional[str] = None) -> bool:
+    """
+    Validate a dataset sample before training.
+    Checks audio file existence, duration, and transcription quality.
+    """
+    # Check transcription
+    if transcription is None or not isinstance(transcription, str):
+        return False
+    
+    transcription = transcription.strip()
+    if len(transcription) < MIN_TRANSCRIPTION_LENGTH or len(transcription) > MAX_TRANSCRIPTION_LENGTH:
+        return False
+    
+    # Check audio
+    if audio_array is not None and sampling_rate is not None:
+        # Calculate duration
+        duration = len(audio_array) / sampling_rate
+        if duration < MIN_AUDIO_DURATION or duration > MAX_AUDIO_DURATION:
+            return False
+        # Check audio is not all zeros or corrupted
+        if np.all(audio_array == 0) or not np.isfinite(audio_array).all():
+            return False
+    
+    # If audio_path is provided, check file exists (for local dataset)
+    if audio_path is not None:
+        if not os.path.exists(audio_path):
+            return False
+    
+    return True
+
+def filter_invalid_samples(dataset: Dataset, audio_col: str = "audio", text_col: str = "sentence") -> Dataset:
+    """
+    Filter out invalid samples from dataset.
+    Returns filtered dataset and reports statistics.
+    """
+    original_size = len(dataset)
+    
+    def validate_sample(example):
+        audio = example.get(audio_col)
+        text = example.get(text_col) or example.get("transcription") or example.get("text")
+        
+        audio_array = None
+        sampling_rate = None
+        if audio is not None:
+            if isinstance(audio, dict):
+                audio_array = audio.get("array")
+                sampling_rate = audio.get("sampling_rate")
+            elif isinstance(audio, str):
+                # For local dataset, audio might be a path
+                return is_valid_sample(audio_path=audio, transcription=text)
+        
+        return is_valid_sample(audio_array=audio_array, sampling_rate=sampling_rate, transcription=text)
+    
+    filtered_dataset = dataset.filter(validate_sample, num_proc=1)
+    filtered_size = len(filtered_dataset)
+    removed = original_size - filtered_size
+    removal_pct = (removed / original_size * 100) if original_size > 0 else 0
+    
+    print(f"  Filtered dataset: {original_size} -> {filtered_size} samples (removed {removed}, {removal_pct:.1f}%)")
+    
+    return filtered_dataset
+
+def load_local_common_voice(cv_path: str) -> Optional[Dataset]:
+    """
+    Load local Common Voice dataset from TSV files.
+    Returns HuggingFace Dataset or None if loading fails.
+    """
+    if not os.path.exists(cv_path):
+        print(f"Local Common Voice path not found: {cv_path}")
+        return None
+    
+    # Try validated.tsv first (better quality), then train.tsv
+    tsv_files = ["validated.tsv", "train.tsv"]
+    tsv_path = None
+    
+    for tsv_file in tsv_files:
+        candidate = os.path.join(cv_path, tsv_file)
+        if os.path.exists(candidate):
+            tsv_path = candidate
+            print(f"Loading local Common Voice from: {tsv_file}")
+            break
+    
+    if tsv_path is None:
+        print(f"No TSV file found in {cv_path}")
+        return None
+    
+    try:
+        # Read TSV file
+        df = pd.read_csv(tsv_path, sep="\t")
+        
+        # Check required columns
+        if "path" not in df.columns or "sentence" not in df.columns:
+            print(f"TSV file missing required columns. Found: {df.columns.tolist()}")
+            return None
+        
+        clips_dir = os.path.join(cv_path, "clips")
+        if not os.path.exists(clips_dir):
+            print(f"Clips directory not found: {clips_dir}")
+            return None
+        
+        # Build dataset structure
+        data = []
+        valid_count = 0
+        invalid_count = 0
+        
+        for idx, row in df.iterrows():
+            audio_filename = row["path"]
+            transcription = str(row["sentence"]).strip()
+            audio_path = os.path.join(clips_dir, audio_filename)
+            
+            # Quick validation before loading
+            if not is_valid_sample(audio_path=audio_path, transcription=transcription):
+                invalid_count += 1
+                continue
+            
+            # Try to load audio to verify it's valid
+            try:
+                audio_data, sr = sf.read(audio_path)
+                duration = len(audio_data) / sr
+                
+                if is_valid_sample(audio_array=audio_data, sampling_rate=sr, transcription=transcription):
+                    data.append({
+                        "path": audio_path,
+                        "audio": {"path": audio_path, "array": audio_data, "sampling_rate": sr},
+                        "sentence": transcription
+                    })
+                    valid_count += 1
+                else:
+                    invalid_count += 1
+            except Exception as e:
+                invalid_count += 1
+                if idx < 10:  # Log first few errors
+                    print(f"  Warning: Could not load {audio_filename}: {e}")
+        
+        if len(data) == 0:
+            print(f"No valid samples found in local dataset")
+            return None
+        
+        print(f"  Loaded {valid_count} valid samples, skipped {invalid_count} invalid samples")
+        
+        # Create HuggingFace Dataset
+        dataset = Dataset.from_list(data)
+        return dataset
+        
+    except Exception as e:
+        print(f"Error loading local Common Voice dataset: {e}")
+        return None
+
 print("Loading Hindi dataset for training...")
 # Try multiple datasets: Common Voice and Indic-Voices
 # Common Voice may require accepting terms at: https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0
+
+# Load all available datasets (local + online)
+loaded_datasets = []
+
+# 1. Try to load local Common Voice dataset
+print("="*60)
+print("Step 1: Loading local Common Voice dataset...")
+print("="*60)
+local_dataset = load_local_common_voice(LOCAL_CV_PATH)
+if local_dataset is not None:
+    print(f"✅ Loaded local dataset: {len(local_dataset)} samples")
+    # Cast audio column
+    local_dataset = local_dataset.cast_column("audio", Audio(sampling_rate=16000))
+    # Apply validation filtering
+    local_dataset = filter_invalid_samples(local_dataset)
+    loaded_datasets.append(("local_cv_23.0", local_dataset))
+else:
+    print("⚠️  Local dataset not available, continuing with online datasets only")
+
+# 2. Load online datasets
+print("\n" + "="*60)
+print("Step 2: Loading online datasets...")
+print("="*60)
 
 dataset_configs = [
     # 1. Fixie.ai's Parquet version of Common Voice 17.0 (Try ignoring verification)
@@ -61,10 +245,6 @@ dataset_configs = [
     }
 ]
 
-dataset = None
-last_error = None
-successful_config = None
-
 for config in dataset_configs:
     try:
         dataset_name = config["name"]
@@ -73,7 +253,7 @@ for config in dataset_configs:
         trust_remote = config.get("trust_remote_code", True)
         verification_mode = config.get("verification_mode", None)
         
-        print(f"Trying to load: {dataset_name} (language: {lang_code}, streaming: {streaming})...")
+        print(f"\nTrying to load: {dataset_name} (language: {lang_code})...")
         
         load_kwargs = {
             "split": config["split"],
@@ -84,25 +264,34 @@ for config in dataset_configs:
         if verification_mode:
             load_kwargs["verification_mode"] = verification_mode
         
-        dataset = load_dataset(dataset_name, lang_code, **load_kwargs)
+        online_dataset = load_dataset(dataset_name, lang_code, **load_kwargs)
         
-        # If streaming, convert to regular dataset (take first N samples for testing)
+        # If streaming, convert to regular dataset
         if streaming:
             print("Streaming mode detected. Converting to regular dataset...")
-            # For streaming, we need to materialize it - take a reasonable sample
-            # You can adjust this number based on your needs
-            dataset = dataset.take(50000)  # Take first 50k samples, adjust as needed
-            dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
+            online_dataset = online_dataset.take(50000)
+            online_dataset = online_dataset.cast_column("audio", Audio(sampling_rate=16000))
+        else:
+            # Cast audio column
+            online_dataset = online_dataset.cast_column("audio", Audio(sampling_rate=16000))
         
-        print(f"✅ Successfully loaded: {dataset_name}")
-        successful_config = config
-        break
+        print(f"✅ Successfully loaded: {dataset_name} ({len(online_dataset)} samples)")
+        
+        # Apply validation filtering
+        online_dataset = filter_invalid_samples(online_dataset)
+        
+        loaded_datasets.append((dataset_name, online_dataset))
+        
     except Exception as e:
         print(f"❌ Failed to load {dataset_name}: {str(e)[:200]}...")
-        last_error = e
         continue
 
-if dataset is None:
+# 3. Combine all datasets
+print("\n" + "="*60)
+print("Step 3: Combining datasets...")
+print("="*60)
+
+if len(loaded_datasets) == 0:
     print("\n" + "="*60)
     print("ERROR: Could not load any Hindi dataset.")
     print("="*60)
@@ -110,15 +299,32 @@ if dataset is None:
     print("1. Accept terms of use for Common Voice:")
     print("   https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0")
     print("2. Check if you're logged in: huggingface-cli login")
-    print("3. Try alternative datasets like Indic-Voices")
-    print("4. Check dataset availability on Hugging Face Hub")
-    print(f"\nLast error: {last_error}")
-    raise RuntimeError(f"Failed to load Hindi dataset. Last error: {last_error}")
+    print("3. Verify local dataset path: " + LOCAL_CV_PATH)
+    print("4. Try alternative datasets like Indic-Voices")
+    raise RuntimeError("Failed to load any Hindi dataset.")
 
-print(f"\n✅ Using dataset: {successful_config['name']} (language: {successful_config['config']})")
+# Concatenate all datasets
+datasets_to_merge = [ds for _, ds in loaded_datasets]
+dataset = concatenate_datasets(datasets_to_merge)
 
-print(f"Dataset loaded: {dataset}")
-print(f"Dataset size: {len(dataset)} samples")
+print(f"✅ Combined {len(loaded_datasets)} datasets:")
+for name, ds in loaded_datasets:
+    print(f"   - {name}: {len(ds)} samples")
+print(f"   Total: {len(dataset)} samples")
+
+# 4. Final validation pass and shuffle
+print("\n" + "="*60)
+print("Step 4: Final validation and shuffling...")
+print("="*60)
+
+# Apply final validation (in case concatenation introduced issues)
+dataset = filter_invalid_samples(dataset)
+
+# Shuffle to mix data sources
+dataset = dataset.shuffle(seed=42)
+
+print(f"✅ Final dataset size: {len(dataset)} samples")
+print("="*60)
 
 # 2. Model and Processor - Load existing fine-tuned model
 fine_tuned_model_id = "chaudharyritik1/whisper-hindi-v1"
@@ -127,42 +333,130 @@ print(f"Loading fine-tuned model from: {fine_tuned_model_id}")
 # Load processor from the fine-tuned model
 processor = WhisperProcessor.from_pretrained(fine_tuned_model_id, language="hindi", task="transcribe")
 
-# 3. Preprocessing
+# 3. Preprocessing with Error Handling
 def prepare_dataset(batch):
-    # Load and resample audio data to 16kHz
-    audio = batch["audio"]
-    
-    # Compute log-Mel input features from input audio array 
-    batch["input_features"] = processor.feature_extractor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
-    
-    # Encode target text to label ids 
-    # Common Voice uses 'sentence', Indic-Voices might use 'transcription' or 'text'
-    # Try different column names
-    if "sentence" in batch:
-        text = batch["sentence"]
-    elif "transcription" in batch:
-        text = batch["transcription"]
-    elif "text" in batch:
-        text = batch["text"]
-    else:
-        # Try to find any text-like column
-        text_cols = [col for col in batch.keys() if col not in ["audio", "input_features"]]
-        if text_cols:
-            text = batch[text_cols[0]]
-            print(f"Warning: Using column '{text_cols[0]}' for transcription")
+    """
+    Preprocess dataset batch with error handling.
+    Returns None for invalid samples (will be filtered out).
+    """
+    try:
+        # Load and resample audio data to 16kHz
+        audio = batch.get("audio")
+        if audio is None:
+            return None
+        
+        # Handle different audio formats
+        if isinstance(audio, dict):
+            audio_array = audio.get("array")
+            sampling_rate = audio.get("sampling_rate")
+        elif isinstance(audio, str):
+            # Audio path - should have been loaded already
+            return None
         else:
-            raise ValueError("Could not find transcription column in dataset")
-    
-    batch["labels"] = processor.tokenizer(text).input_ids
-    return batch
+            return None
+        
+        # Validate audio
+        if audio_array is None or sampling_rate is None:
+            return None
+        
+        if not is_valid_sample(audio_array=audio_array, sampling_rate=sampling_rate):
+            return None
+        
+        # Compute log-Mel input features from input audio array
+        try:
+            batch["input_features"] = processor.feature_extractor(
+                audio_array, sampling_rate=sampling_rate
+            ).input_features[0]
+        except Exception as e:
+            return None
+        
+        # Encode target text to label ids
+        # Common Voice uses 'sentence', Indic-Voices might use 'transcription' or 'text'
+        text = None
+        for col in ["sentence", "transcription", "text"]:
+            if col in batch and batch[col] is not None:
+                text = str(batch[col]).strip()
+                break
+        
+        if text is None:
+            # Try to find any text-like column
+            text_cols = [col for col in batch.keys() if col not in ["audio", "input_features", "path"]]
+            if text_cols:
+                text = str(batch[text_cols[0]]).strip()
+            else:
+                return None
+        
+        # Validate transcription
+        if not is_valid_sample(transcription=text):
+            return None
+        
+        # Tokenize
+        try:
+            batch["labels"] = processor.tokenizer(text).input_ids
+            if len(batch["labels"]) == 0:
+                return None
+        except Exception as e:
+            return None
+        
+        return batch
+        
+    except Exception as e:
+        # Return None for any error - will be filtered out
+        return None
 
-# Ensure audio is 16kHz
-dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
+# Apply preprocessing with filtering
+print("\n" + "="*60)
+print("Step 5: Preprocessing dataset...")
+print("="*60)
+
+original_preprocess_size = len(dataset)
+
+# Preprocess dataset - handle both single examples and batches
+def prepare_dataset_wrapper(examples):
+    """Wrapper to handle both batched and non-batched inputs"""
+    if isinstance(examples.get("audio", [None])[0], dict) or "audio" not in examples:
+        # Batched input
+        results = []
+        batch_size = len(examples.get("audio", []))
+        for i in range(batch_size):
+            example = {key: (examples[key][i] if isinstance(examples[key], list) else examples[key]) 
+                      for key in examples.keys()}
+            result = prepare_dataset(example)
+            if result is not None:
+                results.append(result)
+        
+        if len(results) == 0:
+            return {"input_features": [], "labels": []}
+        
+        # Combine results
+        combined = {}
+        for key in results[0].keys():
+            combined[key] = [r[key] for r in results]
+        return combined
+    else:
+        # Single example
+        result = prepare_dataset(examples)
+        if result is None:
+            return {"input_features": [], "labels": []}
+        return result
 
 # Apply preprocessing
-print("Preprocessing dataset...")
-# Remove all original columns after preprocessing (we only need input_features and labels)
-dataset = dataset.map(prepare_dataset, remove_columns=dataset.column_names, num_proc=1)
+dataset = dataset.map(
+    prepare_dataset_wrapper,
+    remove_columns=dataset.column_names,
+    num_proc=1,
+    batched=True,
+    batch_size=100,
+    desc="Preprocessing"
+)
+
+# Filter out samples with empty features
+dataset = dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
+
+preprocess_filtered_size = len(dataset)
+removed = original_preprocess_size - preprocess_filtered_size
+removal_pct = (removed / original_preprocess_size * 100) if original_preprocess_size > 0 else 0
+print(f"  Preprocessing complete: {original_preprocess_size} -> {preprocess_filtered_size} samples (removed {removed}, {removal_pct:.1f}%)")
 
 # Split into train/validation (90/10 split)
 print("Splitting dataset into train/validation...")
