@@ -23,7 +23,39 @@ except Exception as e:
 
 print("Loading Common Voice Hindi dataset...")
 # Common Voice Hindi dataset
-dataset = load_dataset("mozilla-foundation/common_voice_16_1", "hi", split="train")
+# Note: You may need to accept terms of use at: https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0
+# Try different versions if one doesn't work
+dataset_versions = [
+    ("mozilla-foundation/common_voice_17_0", "hi"),
+    ("mozilla-foundation/common_voice_16_1", "hi"),
+    ("mozilla-foundation/common_voice_15_0", "hi"),
+    ("mozilla-foundation/common_voice", "hi"),
+]
+
+dataset = None
+last_error = None
+
+for dataset_name, lang_code in dataset_versions:
+    try:
+        print(f"Trying to load: {dataset_name} (language: {lang_code})...")
+        dataset = load_dataset(dataset_name, lang_code, split="train", trust_remote_code=True)
+        print(f"✅ Successfully loaded: {dataset_name}")
+        break
+    except Exception as e:
+        print(f"❌ Failed to load {dataset_name}: {str(e)}")
+        last_error = e
+        continue
+
+if dataset is None:
+    print("\n" + "="*60)
+    print("ERROR: Could not load Common Voice dataset from any version.")
+    print("="*60)
+    print("\nPossible solutions:")
+    print("1. Accept terms of use at: https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0")
+    print("2. Check if you're logged in: huggingface-cli login")
+    print("3. Verify dataset availability on Hugging Face Hub")
+    print(f"\nLast error: {last_error}")
+    raise RuntimeError(f"Failed to load Common Voice dataset. Last error: {last_error}")
 
 print(f"Dataset loaded: {dataset}")
 print(f"Dataset size: {len(dataset)} samples")
