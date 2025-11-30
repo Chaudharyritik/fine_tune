@@ -43,6 +43,10 @@ BATCH_SIZE = 8
 GRADIENT_ACCUMULATION = 4
 WARMUP_STEPS = 50
 
+# Memory optimization - set to None to use all data, or a number to limit samples
+MAX_TRAIN_SAMPLES = None  # e.g., 1000 for testing
+MAX_DEV_SAMPLES = None    # e.g., 200 for testing
+
 # =============================================================================
 # Validation Functions
 # =============================================================================
@@ -117,6 +121,7 @@ def load_local_cv_split(cv_path: str, split: str = "train") -> Optional[Dataset]
             print(f"TSV missing required columns. Found: {df.columns.tolist()}")
             return None
         
+        # Memory-efficient: Only store paths, don't load audio yet
         data = []
         valid_count = 0
         invalid_count = 0
@@ -126,7 +131,7 @@ def load_local_cv_split(cv_path: str, split: str = "train") -> Optional[Dataset]
             transcription = str(row["sentence"]).strip()
             audio_path = os.path.join(clips_dir, audio_filename)
             
-            # Quick validation
+            # Quick validation (no audio loading)
             if not os.path.exists(audio_path):
                 invalid_count += 1
                 continue
@@ -135,29 +140,18 @@ def load_local_cv_split(cv_path: str, split: str = "train") -> Optional[Dataset]
                 invalid_count += 1
                 continue
             
-            # Load and validate audio
-            try:
-                audio_data, sr = sf.read(audio_path)
-                
-                if not is_valid_sample(audio_array=audio_data, sampling_rate=sr, transcription=transcription):
-                    invalid_count += 1
-                    continue
-                
-                data.append({
-                    "audio": {"path": audio_path, "array": audio_data, "sampling_rate": sr},
-                    "sentence": transcription
-                })
-                valid_count += 1
-                
-            except Exception as e:
-                invalid_count += 1
-                continue
+            # Store path only - audio will be loaded lazily by HuggingFace Audio feature
+            data.append({
+                "audio": audio_path,  # Just the path, not the actual audio data
+                "sentence": transcription
+            })
+            valid_count += 1
         
         if len(data) == 0:
             print(f"No valid samples found in {split} split")
             return None
         
-        print(f"  ✅ Loaded {valid_count} valid samples, skipped {invalid_count} invalid")
+        print(f"  ✅ Found {valid_count} valid samples, skipped {invalid_count} invalid")
         
         dataset = Dataset.from_list(data)
         return dataset
@@ -203,7 +197,16 @@ print(f"\n✅ Dataset loaded:")
 print(f"   Train: {len(train_dataset)} samples")
 print(f"   Validation: {len(dev_dataset)} samples")
 
-# Cast audio columns
+# Apply sample limits if set (for memory optimization / testing)
+if MAX_TRAIN_SAMPLES is not None and len(train_dataset) > MAX_TRAIN_SAMPLES:
+    train_dataset = train_dataset.select(range(MAX_TRAIN_SAMPLES))
+    print(f"   (Limited train to {MAX_TRAIN_SAMPLES} samples)")
+
+if MAX_DEV_SAMPLES is not None and len(dev_dataset) > MAX_DEV_SAMPLES:
+    dev_dataset = dev_dataset.select(range(MAX_DEV_SAMPLES))
+    print(f"   (Limited dev to {MAX_DEV_SAMPLES} samples)")
+
+# Cast audio columns - this enables lazy loading of audio files
 train_dataset = train_dataset.cast_column("audio", Audio(sampling_rate=16000))
 dev_dataset = dev_dataset.cast_column("audio", Audio(sampling_rate=16000))
 
@@ -249,15 +252,23 @@ print("\n3. Preprocessing datasets...")
 
 def preprocess_and_filter(dataset, desc="Processing"):
     """Preprocess dataset and filter invalid samples."""
+    import gc
+    
     original_size = len(dataset)
     
-    # Apply preprocessing
+    # Apply preprocessing with batched=False to reduce memory
+    # and writer_batch_size to flush to disk periodically
     processed = dataset.map(
         prepare_dataset,
         remove_columns=dataset.column_names,
         num_proc=1,
-        desc=desc
+        desc=desc,
+        writer_batch_size=100,  # Write to disk in small batches
+        load_from_cache_file=False  # Don't cache to avoid memory issues
     )
+    
+    # Force garbage collection
+    gc.collect()
     
     # Filter None results
     processed = processed.filter(
