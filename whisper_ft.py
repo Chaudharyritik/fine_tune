@@ -1,6 +1,5 @@
-import os
 import torch
-from datasets import load_dataset, DatasetDict, Audio
+from datasets import load_dataset, Audio
 from transformers import (
     WhisperForConditionalGeneration,
     WhisperProcessor,

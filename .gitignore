@@ -1,6 +1,9 @@
 # Models (Too large for GitHub)
 whisper-hindi-v1/
 whisper-hindi-ct2/
+whisper-svarah-lora/
+whisper-hindi-cv-lora/
+whisper-hindi-merged/
 
 # Python
 __pycache__/

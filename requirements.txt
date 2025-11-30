@@ -21,3 +21,10 @@ librosa>=0.10.0
 
 # Logging and monitoring
 tensorboard>=2.13.0
+
+# Inference and conversion
+faster-whisper>=1.0.0
+ctranslate2>=3.0.0
+
+# Real-time audio processing
+pyaudio>=0.2.11

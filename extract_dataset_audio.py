@@ -4,7 +4,6 @@ Extract a sample audio file from the Google FLEURS (Hindi) dataset
 
 from datasets import load_dataset
 import soundfile as sf
-import os
 
 print("Loading FLEURS dataset (validation split)...")
 # Load validation split in non-streaming mode to ensure we get the file

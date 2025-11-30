@@ -5,7 +5,6 @@ Press Ctrl+C to stop recording and transcribe.
 
 import pyaudio
 import wave
-import numpy as np
 from faster_whisper import WhisperModel
 import tempfile
 import os

@@ -1,5 +1,4 @@
-import os
-from huggingface_hub import HfApi, create_repo, login
+from huggingface_hub import HfApi, login
 
 def push_to_hub():
     print("🚀 Preparing to push model to Hugging Face Hub...")
