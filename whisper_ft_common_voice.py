@@ -21,41 +21,95 @@ try:
 except Exception as e:
     print(f"Not logged in or error checking auth: {e}")
 
-print("Loading Common Voice Hindi dataset...")
-# Common Voice Hindi dataset
-# Note: You may need to accept terms of use at: https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0
-# Try different versions if one doesn't work
-dataset_versions = [
-    ("mozilla-foundation/common_voice_17_0", "hi"),
-    ("mozilla-foundation/common_voice_16_1", "hi"),
-    ("mozilla-foundation/common_voice_15_0", "hi"),
-    ("mozilla-foundation/common_voice", "hi"),
+print("Loading Hindi dataset for training...")
+# Try multiple datasets: Common Voice and Indic-Voices
+# Common Voice may require accepting terms at: https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0
+
+dataset_configs = [
+    # Try Indic-Voices first (more reliable for Hindi)
+    {
+        "name": "ai4bharat/indic-voices",
+        "config": "hi",
+        "split": "train",
+        "streaming": False,
+        "trust_remote_code": True
+    },
+    # Try Common Voice versions (may require accepting terms)
+    {
+        "name": "mozilla-foundation/common_voice_17_0",
+        "config": "hi",
+        "split": "train",
+        "streaming": False,
+        "trust_remote_code": True
+    },
+    {
+        "name": "mozilla-foundation/common_voice_16_1",
+        "config": "hi",
+        "split": "train",
+        "streaming": False,
+        "trust_remote_code": True
+    },
+    {
+        "name": "mozilla-foundation/common_voice_15_0",
+        "config": "hi",
+        "split": "train",
+        "streaming": False,
+        "trust_remote_code": True
+    },
 ]
 
 dataset = None
 last_error = None
+successful_config = None
 
-for dataset_name, lang_code in dataset_versions:
+for config in dataset_configs:
     try:
-        print(f"Trying to load: {dataset_name} (language: {lang_code})...")
-        dataset = load_dataset(dataset_name, lang_code, split="train", trust_remote_code=True)
+        dataset_name = config["name"]
+        lang_code = config["config"]
+        streaming = config.get("streaming", False)
+        trust_remote = config.get("trust_remote_code", True)
+        
+        print(f"Trying to load: {dataset_name} (language: {lang_code}, streaming: {streaming})...")
+        
+        load_kwargs = {
+            "split": config["split"],
+            "trust_remote_code": trust_remote
+        }
+        if streaming:
+            load_kwargs["streaming"] = True
+        
+        dataset = load_dataset(dataset_name, lang_code, **load_kwargs)
+        
+        # If streaming, convert to regular dataset (take first N samples for testing)
+        if streaming:
+            print("Streaming mode detected. Converting to regular dataset...")
+            # For streaming, we need to materialize it - take a reasonable sample
+            # You can adjust this number based on your needs
+            dataset = dataset.take(50000)  # Take first 50k samples, adjust as needed
+            dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
+        
         print(f"✅ Successfully loaded: {dataset_name}")
+        successful_config = config
         break
     except Exception as e:
-        print(f"❌ Failed to load {dataset_name}: {str(e)}")
+        print(f"❌ Failed to load {dataset_name}: {str(e)[:200]}...")
         last_error = e
         continue
 
 if dataset is None:
     print("\n" + "="*60)
-    print("ERROR: Could not load Common Voice dataset from any version.")
+    print("ERROR: Could not load any Hindi dataset.")
     print("="*60)
     print("\nPossible solutions:")
-    print("1. Accept terms of use at: https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0")
+    print("1. Accept terms of use for Common Voice:")
+    print("   https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0")
     print("2. Check if you're logged in: huggingface-cli login")
-    print("3. Verify dataset availability on Hugging Face Hub")
+    print("3. Try alternative datasets like Indic-Voices")
+    print("4. Check dataset availability on Hugging Face Hub")
     print(f"\nLast error: {last_error}")
-    raise RuntimeError(f"Failed to load Common Voice dataset. Last error: {last_error}")
+    raise RuntimeError(f"Failed to load Hindi dataset. Last error: {last_error}")
+
+print(f"\n✅ Using dataset: {successful_config['name']} (language: {successful_config['config']})")
 
 print(f"Dataset loaded: {dataset}")
 print(f"Dataset size: {len(dataset)} samples")
@@ -76,8 +130,24 @@ def prepare_dataset(batch):
     batch["input_features"] = processor.feature_extractor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
     
     # Encode target text to label ids 
-    # Common Voice uses 'sentence' column for transcription
-    batch["labels"] = processor.tokenizer(batch["sentence"]).input_ids
+    # Common Voice uses 'sentence', Indic-Voices might use 'transcription' or 'text'
+    # Try different column names
+    if "sentence" in batch:
+        text = batch["sentence"]
+    elif "transcription" in batch:
+        text = batch["transcription"]
+    elif "text" in batch:
+        text = batch["text"]
+    else:
+        # Try to find any text-like column
+        text_cols = [col for col in batch.keys() if col not in ["audio", "input_features"]]
+        if text_cols:
+            text = batch[text_cols[0]]
+            print(f"Warning: Using column '{text_cols[0]}' for transcription")
+        else:
+            raise ValueError("Could not find transcription column in dataset")
+    
+    batch["labels"] = processor.tokenizer(text).input_ids
     return batch
 
 # Ensure audio is 16kHz
