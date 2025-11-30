@@ -119,10 +119,6 @@ def main():
             return_tensors="pt"
         ).input_features.to(model.device)
         
-        # Cast input to match model dtype (usually float16 for 8-bit/fp16 models)
-        if model.dtype == torch.float16 or model.dtype == torch.bfloat16:
-            input_features = input_features.to(model.dtype)
-        
         with torch.no_grad():
             generated_ids = model.generate(input_features, language=LANGUAGE)
             
