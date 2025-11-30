@@ -26,7 +26,7 @@ print("Loading Hindi dataset for training...")
 # Common Voice may require accepting terms at: https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0
 
 dataset_configs = [
-    # Try Fixie.ai's Parquet version of Common Voice 17.0 (often works better/faster)
+    # 1. Fixie.ai's Parquet version of Common Voice 17.0 (Most reliable right now)
     {
         "name": "fixie-ai/common_voice_17_0",
         "config": "hi",
@@ -34,23 +34,15 @@ dataset_configs = [
         "streaming": False,
         "trust_remote_code": True
     },
-    # Try Common Voice 16.0 (instead of 16.1)
+    # 2. Common Voice 11.0 (Very stable older version)
     {
-        "name": "mozilla-foundation/common_voice_16_0",
+        "name": "mozilla-foundation/common_voice_11_0",
         "config": "hi",
         "split": "train",
         "streaming": False,
         "trust_remote_code": True
     },
-    # Try Common Voice 17.0 (Official)
-    {
-        "name": "mozilla-foundation/common_voice_17_0",
-        "config": "hi",
-        "split": "train",
-        "streaming": False,
-        "trust_remote_code": True
-    },
-    # Try Common Voice 13.0 (Very stable)
+    # 3. Common Voice 13.0
     {
         "name": "mozilla-foundation/common_voice_13_0",
         "config": "hi",
@@ -58,14 +50,15 @@ dataset_configs = [
         "streaming": False,
         "trust_remote_code": True
     },
-    # Fallback to FLEURS if everything else fails (at least it runs)
+    # 4. Common Voice 16.0 (Official)
     {
-        "name": "google/fleurs",
-        "config": "hi_in",
+        "name": "mozilla-foundation/common_voice_16_0",
+        "config": "hi",
         "split": "train",
         "streaming": False,
         "trust_remote_code": True
     }
+    # Note: Removed google/fleurs to avoid retraining on clean data
 ]
 
 dataset = None
