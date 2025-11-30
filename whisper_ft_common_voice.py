@@ -26,13 +26,14 @@ print("Loading Hindi dataset for training...")
 # Common Voice may require accepting terms at: https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0
 
 dataset_configs = [
-    # 1. Fixie.ai's Parquet version of Common Voice 17.0 (Most reliable right now)
+    # 1. Fixie.ai's Parquet version of Common Voice 17.0 (Try ignoring verification)
     {
         "name": "fixie-ai/common_voice_17_0",
         "config": "hi",
         "split": "train",
         "streaming": False,
-        "trust_remote_code": True
+        "trust_remote_code": True,
+        "verification_mode": "no_checks"
     },
     # 2. Common Voice 11.0 (Very stable older version)
     {
@@ -42,23 +43,22 @@ dataset_configs = [
         "streaming": False,
         "trust_remote_code": True
     },
-    # 3. Common Voice 13.0
+    # 3. IndicVoices (Correct capitalization is important)
     {
-        "name": "mozilla-foundation/common_voice_13_0",
+        "name": "ai4bharat/IndicVoices",
         "config": "hi",
         "split": "train",
         "streaming": False,
         "trust_remote_code": True
     },
-    # 4. Common Voice 16.0 (Official)
+    # 4. Kathbath (Indian Accented Noisy Dataset)
     {
-        "name": "mozilla-foundation/common_voice_16_0",
-        "config": "hi",
+        "name": "ai4bharat/kathbath",
+        "config": "hindi",
         "split": "train",
         "streaming": False,
         "trust_remote_code": True
     }
-    # Note: Removed google/fleurs to avoid retraining on clean data
 ]
 
 dataset = None
@@ -71,6 +71,7 @@ for config in dataset_configs:
         lang_code = config["config"]
         streaming = config.get("streaming", False)
         trust_remote = config.get("trust_remote_code", True)
+        verification_mode = config.get("verification_mode", None)
         
         print(f"Trying to load: {dataset_name} (language: {lang_code}, streaming: {streaming})...")
         
@@ -80,6 +81,8 @@ for config in dataset_configs:
         }
         if streaming:
             load_kwargs["streaming"] = True
+        if verification_mode:
+            load_kwargs["verification_mode"] = verification_mode
         
         dataset = load_dataset(dataset_name, lang_code, **load_kwargs)
         
