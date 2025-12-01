@@ -30,11 +30,12 @@ LOCAL_CV_PATH = os.getenv("LOCAL_CV_PATH", "/home/fine_tune/cv-corpus-23.0-2025-
 FINE_TUNED_MODEL_ID = "chaudharyritik1/whisper-hindi-v1"
 OUTPUT_DIR = "./whisper-hindi-cv-lora"
 
-# Validation thresholds
+# Validation thresholds (used only if ENABLE_VALIDATION_FILTERING is True)
 MIN_AUDIO_DURATION = 0.1  # seconds
 MAX_AUDIO_DURATION = 30.0  # seconds
 MIN_TRANSCRIPTION_LENGTH = 1  # characters
 MAX_TRANSCRIPTION_LENGTH = 500  # characters
+ENABLE_VALIDATION_FILTERING = False  # Set True to enable strict filtering
 
 # Training hyperparameters (conservative to preserve FLEURS learning)
 LEARNING_RATE = 1e-5
@@ -124,21 +125,27 @@ def load_local_cv_split(cv_path: str, split: str = "train") -> Optional[Dataset]
         # Memory-efficient: Only store paths, don't load audio yet
         data = []
         valid_count = 0
-        invalid_count = 0
+        skipped_count = 0
         
         for idx, row in df.iterrows():
             audio_filename = row["path"]
             transcription = str(row["sentence"]).strip()
             audio_path = os.path.join(clips_dir, audio_filename)
             
-            # Quick validation (no audio loading)
+            # Always ensure file exists
             if not os.path.exists(audio_path):
-                invalid_count += 1
+                skipped_count += 1
                 continue
             
-            if not is_valid_sample(transcription=transcription):
-                invalid_count += 1
-                continue
+            if ENABLE_VALIDATION_FILTERING:
+                if not is_valid_sample(transcription=transcription):
+                    skipped_count += 1
+                    continue
+            else:
+                # Minimal check: skip empty transcripts
+                if len(transcription) == 0:
+                    skipped_count += 1
+                    continue
             
             # Store path only - audio will be loaded lazily by HuggingFace Audio feature
             data.append({
@@ -151,7 +158,7 @@ def load_local_cv_split(cv_path: str, split: str = "train") -> Optional[Dataset]
             print(f"No valid samples found in {split} split")
             return None
         
-        print(f"  ✅ Found {valid_count} valid samples, skipped {invalid_count} invalid")
+        print(f"  ✅ Found {valid_count} samples, skipped {skipped_count}")
         
         dataset = Dataset.from_list(data)
         return dataset
@@ -256,8 +263,7 @@ def preprocess_and_filter(dataset, desc="Processing"):
     
     original_size = len(dataset)
     
-    # Apply preprocessing with batched=False to reduce memory
-    # and writer_batch_size to flush to disk periodically
+    # Apply preprocessing with writer_batch_size to flush to disk periodically
     processed = dataset.map(
         prepare_dataset,
         remove_columns=dataset.column_names,
@@ -270,13 +276,13 @@ def preprocess_and_filter(dataset, desc="Processing"):
     # Force garbage collection
     gc.collect()
     
-    # Filter None results
-    processed = processed.filter(
-        lambda x: x is not None and 
-                  x.get("input_features") is not None and 
-                  x.get("labels") is not None and
-                  len(x.get("labels", [])) > 0
-    )
+    if ENABLE_VALIDATION_FILTERING:
+        processed = processed.filter(
+            lambda x: x is not None and 
+                      x.get("input_features") is not None and 
+                      x.get("labels") is not None and
+                      len(x.get("labels", [])) > 0
+        )
     
     filtered_size = len(processed)
     removed = original_size - filtered_size
