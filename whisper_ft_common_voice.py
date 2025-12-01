@@ -469,6 +469,11 @@ def prepare_dataset(batch):
         except Exception as e:
             return None
         
+        # Clear audio_array from memory immediately after processing
+        del audio_array
+        if "audio" in batch:
+            del batch["audio"]
+        
         # Encode target text to label ids
         # Common Voice uses 'sentence'
         text = None
@@ -532,6 +537,11 @@ def prepare_dataset_wrapper(examples):
         result = prepare_dataset(example)
         if result is not None:
             results.append(result)
+        
+        # Periodic garbage collection for large batches
+        if (i + 1) % 25 == 0:  # Every 25 samples
+            import gc
+            gc.collect()
     
     if len(results) == 0:
         return {"input_features": [], "labels": []}
@@ -540,6 +550,12 @@ def prepare_dataset_wrapper(examples):
     combined = {}
     for key in results[0].keys():
         combined[key] = [r[key] for r in results]
+    
+    # Clear results to free memory
+    del results
+    import gc
+    gc.collect()
+    
     return combined
 
 print("Preprocessing training dataset (this may take a while)...")
@@ -549,8 +565,8 @@ train_dataset = train_dataset.map(
     remove_columns=train_dataset.column_names,
     num_proc=1,
     batched=True,
-    batch_size=100,
-    writer_batch_size=1000,  # OPTIMIZED: Write to disk in batches to free memory
+    batch_size=50,  # REDUCED: Smaller batches to reduce memory
+    writer_batch_size=200,  # REDUCED: Write more frequently to free memory
     desc="Preprocessing train",
     load_from_cache_file=False  # Don't cache to save disk space
 )
@@ -558,18 +574,57 @@ train_dataset = train_dataset.map(
 # Skip filtering - datasets are already quality-checked
 # train_dataset = train_dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
 
+# Force garbage collection after training preprocessing
+gc.collect()
+import torch
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+
 print("\nPreprocessing validation dataset...")
 original_dev_size = len(dev_dataset)
-dev_dataset = dev_dataset.map(
-    prepare_dataset_wrapper,
-    remove_columns=dev_dataset.column_names,
-    num_proc=1,
-    batched=True,
-    batch_size=100,
-    writer_batch_size=1000,
-    desc="Preprocessing validation",
-    load_from_cache_file=False
-)
+
+# Process validation in smaller chunks to avoid OOM
+# Split validation into chunks of 500 samples
+CHUNK_SIZE = 500
+dev_chunks = []
+total_chunks = (len(dev_dataset) + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+print(f"  Processing validation in {total_chunks} chunks of ~{CHUNK_SIZE} samples each...")
+
+for chunk_idx in range(total_chunks):
+    start_idx = chunk_idx * CHUNK_SIZE
+    end_idx = min((chunk_idx + 1) * CHUNK_SIZE, len(dev_dataset))
+    chunk = dev_dataset.select(range(start_idx, end_idx))
+    
+    print(f"  Processing validation chunk {chunk_idx + 1}/{total_chunks} ({start_idx}-{end_idx})...")
+    
+    processed_chunk = chunk.map(
+        prepare_dataset_wrapper,
+        remove_columns=chunk.column_names,
+        num_proc=1,
+        batched=True,
+        batch_size=50,  # Small batches for memory efficiency
+        writer_batch_size=200,  # Write frequently
+        desc=f"Validation chunk {chunk_idx + 1}",
+        load_from_cache_file=False
+    )
+    
+    dev_chunks.append(processed_chunk)
+    
+    # Force garbage collection after each chunk
+    del chunk
+    del processed_chunk
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+# Concatenate all chunks
+from datasets import concatenate_datasets
+dev_dataset = concatenate_datasets(dev_chunks)
+del dev_chunks
+gc.collect()
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
 
 # Skip filtering - datasets are already quality-checked
 # dev_dataset = dev_dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
