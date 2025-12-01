@@ -740,26 +740,32 @@ def compute_metrics(pred):
         "cer": cer,
     }
 
-# 7. Training Arguments - Light training to prevent VM hanging
+# 7. Training Arguments - Ultra-light training to prevent VM stuck issue
+# Key changes to fix stuck problem:
+# - Disabled evaluation during training (eval_strategy="no") - evaluation with predict_with_generate 
+#   on 2700 samples is VERY expensive and causes VM to hang
+# - Disabled gradient checkpointing - the requires_grad warning might be causing stuck issue
+# - Disabled tensorboard - I/O can cause hangs on slow VMs
+# - Reduced logging frequency - less I/O overhead
+# - Evaluation will run only at the end (already implemented below)
 training_args = Seq2SeqTrainingArguments(
     output_dir="./whisper-hindi-cv-lora",
-    per_device_train_batch_size=TRAIN_BATCH_SIZE,  # Reduced to 4 for lighter training
-    gradient_accumulation_steps=GRADIENT_ACCUMULATION,  # Reduced to 2 (effective batch: 8)
+    per_device_train_batch_size=TRAIN_BATCH_SIZE,  # Batch size 4 is fine for small dataset
+    gradient_accumulation_steps=GRADIENT_ACCUMULATION,  # Effective batch: 8
     learning_rate=1e-5,  # Significantly lower learning rate for fine-tuning
     warmup_steps=50,
     max_steps=MAX_STEPS,  # Keep at 2000 to preserve accuracy
     lr_scheduler_type="linear",  # Linear decay
-    gradient_checkpointing=True,
+    gradient_checkpointing=False,  # Disabled to fix potential stuck issue from requires_grad warning
     bf16=True,
-    eval_strategy="steps",
-    per_device_eval_batch_size=EVAL_BATCH_SIZE,  # Reduced to 4 for lighter training
-    predict_with_generate=True,
+    eval_strategy="no",  # Disabled during training - evaluation generates text for 2700 samples which is VERY expensive
+    per_device_eval_batch_size=EVAL_BATCH_SIZE,  # For final evaluation only
+    predict_with_generate=True,  # Only used in final evaluation
     generation_max_length=225,
     save_steps=SAVE_STEPS,  # Reduced to 500 (save 5x less often)
-    eval_steps=EVAL_STEPS,  # Reduced to 500 (evaluate 5x less often)
-    logging_steps=25,
-    report_to=["tensorboard"],
-    load_best_model_at_end=True,
+    logging_steps=50,  # Reduced from 25 to reduce I/O overhead
+    report_to=[],  # Disabled tensorboard to prevent I/O hangs on slow VMs
+    load_best_model_at_end=False,  # No evaluation during training, so no best model to load
     metric_for_best_model="wer",
     greater_is_better=False,
     push_to_hub=False,
