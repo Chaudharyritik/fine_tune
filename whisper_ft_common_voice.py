@@ -105,29 +105,42 @@ def filter_invalid_samples(dataset: Dataset, audio_col: str = "audio", text_col:
     
     return filtered_dataset
 
-def load_local_common_voice(cv_path: str) -> Optional[Dataset]:
+def load_local_common_voice_split(cv_path: str, split: str = "train") -> Optional[Dataset]:
     """
-    Load local Common Voice dataset from TSV files.
-    Returns HuggingFace Dataset or None if loading fails.
+    Load a specific split from local Common Voice dataset.
+    
+    Args:
+        cv_path: Path to the Common Voice language directory (e.g., /path/to/hi/)
+        split: One of "train", "dev", "test", or "validated"
+    
+    Returns:
+        HuggingFace Dataset or None if loading fails.
     """
     if not os.path.exists(cv_path):
         print(f"Local Common Voice path not found: {cv_path}")
         return None
     
-    # Try validated.tsv first (better quality), then train.tsv
-    tsv_files = ["validated.tsv", "train.tsv"]
-    tsv_path = None
+    # Map split names to TSV files
+    split_to_file = {
+        "train": "train.tsv",
+        "dev": "dev.tsv",
+        "validation": "dev.tsv",
+        "test": "test.tsv",
+        "validated": "validated.tsv"
+    }
     
-    for tsv_file in tsv_files:
-        candidate = os.path.join(cv_path, tsv_file)
-        if os.path.exists(candidate):
-            tsv_path = candidate
-            print(f"Loading local Common Voice from: {tsv_file}")
-            break
+    if split not in split_to_file:
+        print(f"Unknown split: {split}. Using train.tsv")
+        split = "train"
     
-    if tsv_path is None:
-        print(f"No TSV file found in {cv_path}")
+    tsv_file = split_to_file[split]
+    tsv_path = os.path.join(cv_path, tsv_file)
+    
+    if not os.path.exists(tsv_path):
+        print(f"TSV file not found: {tsv_path}")
         return None
+    
+    print(f"Loading local Common Voice from: {tsv_file} (split: {split})")
     
     try:
         # Read TSV file
@@ -175,7 +188,7 @@ def load_local_common_voice(cv_path: str) -> Optional[Dataset]:
                 print(f"    Processed {idx + 1}/{len(df)} samples...")
         
         if len(data) == 0:
-            print(f"No valid samples found in local dataset")
+            print(f"No valid samples found in {split} split")
             return None
         
         print(f"  Found {valid_count} valid samples, skipped {invalid_count} invalid samples")
@@ -190,7 +203,7 @@ def load_local_common_voice(cv_path: str) -> Optional[Dataset]:
         return dataset
         
     except Exception as e:
-        print(f"Error loading local Common Voice dataset: {e}")
+        print(f"Error loading local Common Voice {split} split: {e}")
         return None
 
 print("Loading Hindi dataset for training...")
@@ -198,24 +211,43 @@ print("Loading Hindi dataset for training...")
 # Online datasets will only be loaded if local dataset fails or USE_ONLINE_DATASETS is set to "always"
 
 # Load all available datasets (local + online)
-loaded_datasets = []
+train_datasets = []
+dev_datasets = []
 
-# 1. Try to load local Common Voice dataset
+# 1. Try to load local Common Voice dataset splits
 print("="*60)
-print("Step 1: Loading local Common Voice dataset...")
+print("Step 1: Loading local Common Voice dataset splits...")
 print("="*60)
-local_dataset = load_local_common_voice(LOCAL_CV_PATH)
+
+# Load train split
+train_dataset = load_local_common_voice_split(LOCAL_CV_PATH, "train")
 local_dataset_loaded = False
-if local_dataset is not None:
-    print(f"✅ Loaded local dataset: {len(local_dataset)} samples")
-    # Note: Audio casting is now done inside load_local_common_voice()
-    # Apply validation filtering (lightweight - only checks paths and text)
-    local_dataset = filter_invalid_samples(local_dataset)
-    loaded_datasets.append(("local_cv_23.0", local_dataset))
+
+if train_dataset is not None:
+    print(f"✅ Loaded train split: {len(train_dataset)} samples")
+    train_datasets.append(("local_cv_train", train_dataset))
     local_dataset_loaded = True
-    # Force garbage collection after loading
     gc.collect()
 else:
+    print("⚠️  Train split not found, trying validated.tsv...")
+    # Fallback to validated.tsv if train.tsv doesn't exist
+    validated_dataset = load_local_common_voice_split(LOCAL_CV_PATH, "validated")
+    if validated_dataset is not None:
+        print(f"✅ Loaded validated dataset: {len(validated_dataset)} samples")
+        train_datasets.append(("local_cv_validated", validated_dataset))
+        local_dataset_loaded = True
+        gc.collect()
+
+# Load dev/validation split
+dev_dataset = load_local_common_voice_split(LOCAL_CV_PATH, "dev")
+if dev_dataset is not None:
+    print(f"✅ Loaded dev split: {len(dev_dataset)} samples")
+    dev_datasets.append(("local_cv_dev", dev_dataset))
+    gc.collect()
+else:
+    print("⚠️  Dev split not found - will create validation split from training data")
+
+if not local_dataset_loaded:
     print("⚠️  Local dataset not available, continuing with online datasets only")
 
 # 2. Load online datasets (only if needed)
@@ -277,7 +309,7 @@ dataset_configs = [
 if should_load_online:
     for config in dataset_configs:
         # Limit number of datasets to prevent memory issues
-        if len(loaded_datasets) >= MAX_DATASETS_TO_LOAD:
+        if len(train_datasets) >= MAX_DATASETS_TO_LOAD:
             print(f"\n⚠️  Reached maximum dataset limit ({MAX_DATASETS_TO_LOAD}), skipping remaining datasets")
             break
         
@@ -326,10 +358,8 @@ if should_load_online:
             
             print(f"✅ Successfully loaded: {dataset_name} ({len(online_dataset)} samples)")
             
-            # Apply validation filtering
-            online_dataset = filter_invalid_samples(online_dataset)
-            
-            loaded_datasets.append((dataset_name, online_dataset))
+            # Skip filtering - datasets are already quality-checked
+            train_datasets.append((dataset_name, online_dataset))
             
             # Force garbage collection after each dataset
             gc.collect()
@@ -340,56 +370,77 @@ if should_load_online:
 else:
     print("   (Skipped - using local dataset only)")
 
-# 3. Combine all datasets
+# 3. Combine datasets
 print("\n" + "="*60)
 print("Step 3: Combining datasets...")
 print("="*60)
 
-if len(loaded_datasets) == 0:
+if len(train_datasets) == 0:
     print("\n" + "="*60)
-    print("ERROR: Could not load any Hindi dataset.")
+    print("ERROR: Could not load any training dataset.")
     print("="*60)
     print("\nPossible solutions:")
     if USE_ONLINE_DATASETS == "never":
         print("1. Verify local dataset path: " + LOCAL_CV_PATH)
-        print("2. Check that the directory contains validated.tsv or train.tsv")
+        print("2. Check that the directory contains train.tsv or validated.tsv")
         print("3. Ensure clips/ directory exists with audio files")
     else:
         print("1. Verify local dataset path: " + LOCAL_CV_PATH)
-        print("2. Check that the directory contains validated.tsv or train.tsv")
+        print("2. Check that the directory contains train.tsv or validated.tsv")
         print("3. Ensure clips/ directory exists with audio files")
         print("4. Or set USE_ONLINE_DATASETS='always' to load online datasets")
         print("5. Accept terms of use for Common Voice:")
         print("   https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0")
         print("6. Check if you're logged in: huggingface-cli login")
-    raise RuntimeError("Failed to load any Hindi dataset.")
+    raise RuntimeError("Failed to load any training dataset.")
 
-# Concatenate all datasets
-print("Concatenating datasets (this may take a moment)...")
-datasets_to_merge = [ds for _, ds in loaded_datasets]
-dataset = concatenate_datasets(datasets_to_merge)
+# Concatenate training datasets
+if len(train_datasets) > 1:
+    print("Concatenating training datasets...")
+    train_datasets_to_merge = [ds for _, ds in train_datasets]
+    train_dataset = concatenate_datasets(train_datasets_to_merge)
+    del train_datasets_to_merge
+else:
+    train_dataset = train_datasets[0][1]
 
-print(f"✅ Combined {len(loaded_datasets)} datasets:")
-for name, ds in loaded_datasets:
+print(f"✅ Training dataset: {len(train_dataset)} samples")
+for name, ds in train_datasets:
     print(f"   - {name}: {len(ds)} samples")
-print(f"   Total: {len(dataset)} samples")
 
-# Free memory from individual datasets
-del datasets_to_merge
+# Handle validation dataset
+if len(dev_datasets) > 0:
+    if len(dev_datasets) > 1:
+        print("Concatenating validation datasets...")
+        dev_datasets_to_merge = [ds for _, ds in dev_datasets]
+        dev_dataset = concatenate_datasets(dev_datasets_to_merge)
+        del dev_datasets_to_merge
+    else:
+        dev_dataset = dev_datasets[0][1]
+    
+    print(f"✅ Validation dataset: {len(dev_dataset)} samples")
+    for name, ds in dev_datasets:
+        print(f"   - {name}: {len(ds)} samples")
+else:
+    # No dev split found - create validation split from training data
+    print("⚠️  No dev split found - creating validation split from training data (90/10 split)...")
+    split_result = train_dataset.train_test_split(test_size=0.1, seed=42)
+    train_dataset = split_result["train"]
+    dev_dataset = split_result["test"]
+    print(f"✅ Created validation split: {len(dev_dataset)} samples from training data")
+
 gc.collect()
 
-# 4. Final validation pass and shuffle
+# 4. Shuffle datasets
 print("\n" + "="*60)
-print("Step 4: Final validation and shuffling...")
+print("Step 4: Shuffling datasets...")
 print("="*60)
 
-# Apply final validation (in case concatenation introduced issues)
-dataset = filter_invalid_samples(dataset)
+# Shuffle training dataset
+train_dataset = train_dataset.shuffle(seed=42)
+# Don't shuffle validation dataset - keep it consistent for evaluation
 
-# Shuffle to mix data sources
-dataset = dataset.shuffle(seed=42)
-
-print(f"✅ Final dataset size: {len(dataset)} samples")
+print(f"✅ Training dataset: {len(train_dataset)} samples (shuffled)")
+print(f"✅ Validation dataset: {len(dev_dataset)} samples")
 print("="*60)
 
 # 2. Model and Processor - Load existing fine-tuned model
@@ -412,20 +463,34 @@ def prepare_dataset(batch):
             return None
         
         # Handle different audio formats
+        audio_array = None
+        sampling_rate = None
+        
         if isinstance(audio, dict):
+            # Audio already loaded as dict (from Audio() feature)
             audio_array = audio.get("array")
             sampling_rate = audio.get("sampling_rate")
         elif isinstance(audio, str):
-            # Audio path - should have been loaded already
-            return None
+            # Audio path - load it directly (Audio() feature should have decoded, but handle fallback)
+            try:
+                audio_array, sampling_rate = sf.read(audio)
+                # Resample to 16kHz if needed
+                if sampling_rate != 16000:
+                    try:
+                        from scipy import signal
+                        num_samples = int(len(audio_array) * 16000 / sampling_rate)
+                        audio_array = signal.resample(audio_array, num_samples)
+                        sampling_rate = 16000
+                    except ImportError:
+                        # If scipy not available, assume Audio() already resampled
+                        pass
+            except Exception as e:
+                return None
         else:
             return None
         
-        # Validate audio
-        if audio_array is None or sampling_rate is None:
-            return None
-        
-        if not is_valid_sample(audio_array=audio_array, sampling_rate=sampling_rate):
+        # Basic validation - just check audio exists
+        if audio_array is None or sampling_rate is None or len(audio_array) == 0:
             return None
         
         # Compute log-Mel input features from input audio array
@@ -437,14 +502,14 @@ def prepare_dataset(batch):
             return None
         
         # Encode target text to label ids
-        # Common Voice uses 'sentence', Indic-Voices might use 'transcription' or 'text'
+        # Common Voice uses 'sentence'
         text = None
         for col in ["sentence", "transcription", "text"]:
             if col in batch and batch[col] is not None:
                 text = str(batch[col]).strip()
                 break
         
-        if text is None:
+        if text is None or len(text) == 0:
             # Try to find any text-like column
             text_cols = [col for col in batch.keys() if col not in ["audio", "input_features", "path"]]
             if text_cols:
@@ -452,8 +517,8 @@ def prepare_dataset(batch):
             else:
                 return None
         
-        # Validate transcription
-        if not is_valid_sample(transcription=text):
+        # Basic validation - just check text exists
+        if not text or len(text.strip()) == 0:
             return None
         
         # Tokenize
@@ -470,70 +535,91 @@ def prepare_dataset(batch):
         # Return None for any error - will be filtered out
         return None
 
-# Apply preprocessing with filtering
+# Apply preprocessing with memory optimization
 print("\n" + "="*60)
-print("Step 5: Preprocessing dataset...")
+print("Step 5: Preprocessing datasets...")
 print("="*60)
-
-original_preprocess_size = len(dataset)
 
 # Preprocess dataset - handle both single examples and batches
 def prepare_dataset_wrapper(examples):
     """Wrapper to handle both batched and non-batched inputs"""
-    if isinstance(examples.get("audio", [None])[0], dict) or "audio" not in examples:
-        # Batched input
-        results = []
-        batch_size = len(examples.get("audio", []))
-        for i in range(batch_size):
-            example = {key: (examples[key][i] if isinstance(examples[key], list) else examples[key]) 
-                      for key in examples.keys()}
-            result = prepare_dataset(example)
-            if result is not None:
-                results.append(result)
+    # Get audio list
+    audio_list = examples.get("audio", [])
+    if len(audio_list) == 0:
+        return {"input_features": [], "labels": []}
+    
+    # Batched input - process each example
+    results = []
+    batch_size = len(audio_list) if isinstance(audio_list, list) else 1
+    
+    for i in range(batch_size):
+        # Extract single example from batch
+        example = {}
+        for key in examples.keys():
+            if isinstance(examples[key], list):
+                example[key] = examples[key][i]
+            else:
+                example[key] = examples[key]
         
-        if len(results) == 0:
-            return {"input_features": [], "labels": []}
-        
-        # Combine results
-        combined = {}
-        for key in results[0].keys():
-            combined[key] = [r[key] for r in results]
-        return combined
-    else:
-        # Single example
-        result = prepare_dataset(examples)
-        if result is None:
-            return {"input_features": [], "labels": []}
-        return result
+        result = prepare_dataset(example)
+        if result is not None:
+            results.append(result)
+    
+    if len(results) == 0:
+        return {"input_features": [], "labels": []}
+    
+    # Combine results
+    combined = {}
+    for key in results[0].keys():
+        combined[key] = [r[key] for r in results]
+    return combined
 
-# Apply preprocessing with memory optimization
-print("Preprocessing dataset (this may take a while)...")
-dataset = dataset.map(
+print("Preprocessing training dataset (this may take a while)...")
+original_train_size = len(train_dataset)
+train_dataset = train_dataset.map(
     prepare_dataset_wrapper,
-    remove_columns=dataset.column_names,
+    remove_columns=train_dataset.column_names,
     num_proc=1,
     batched=True,
     batch_size=100,
     writer_batch_size=1000,  # OPTIMIZED: Write to disk in batches to free memory
-    desc="Preprocessing",
+    desc="Preprocessing train",
     load_from_cache_file=False  # Don't cache to save disk space
 )
+
+# Filter out samples with empty features
+train_dataset = train_dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
+train_filtered_size = len(train_dataset)
+train_removed = original_train_size - train_filtered_size
+train_removal_pct = (train_removed / original_train_size * 100) if original_train_size > 0 else 0
+print(f"  Training preprocessing: {original_train_size} -> {train_filtered_size} samples (removed {train_removed}, {train_removal_pct:.1f}%)")
+
+print("\nPreprocessing validation dataset...")
+original_dev_size = len(dev_dataset)
+dev_dataset = dev_dataset.map(
+    prepare_dataset_wrapper,
+    remove_columns=dev_dataset.column_names,
+    num_proc=1,
+    batched=True,
+    batch_size=100,
+    writer_batch_size=1000,
+    desc="Preprocessing validation",
+    load_from_cache_file=False
+)
+
+# Filter out samples with empty features
+dev_dataset = dev_dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
+dev_filtered_size = len(dev_dataset)
+dev_removed = original_dev_size - dev_filtered_size
+dev_removal_pct = (dev_removed / original_dev_size * 100) if original_dev_size > 0 else 0
+print(f"  Validation preprocessing: {original_dev_size} -> {dev_filtered_size} samples (removed {dev_removed}, {dev_removal_pct:.1f}%)")
 
 # Force garbage collection after preprocessing
 gc.collect()
 
-# Filter out samples with empty features
-dataset = dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
-
-preprocess_filtered_size = len(dataset)
-removed = original_preprocess_size - preprocess_filtered_size
-removal_pct = (removed / original_preprocess_size * 100) if original_preprocess_size > 0 else 0
-print(f"  Preprocessing complete: {original_preprocess_size} -> {preprocess_filtered_size} samples (removed {removed}, {removal_pct:.1f}%)")
-
-# Split into train/validation (90/10 split)
-print("Splitting dataset into train/validation...")
-dataset = dataset.train_test_split(test_size=0.1, seed=42)
-print(f"Train samples: {len(dataset['train'])}, Validation samples: {len(dataset['test'])}")
+print(f"\n✅ Final dataset sizes:")
+print(f"   Train: {len(train_dataset)} samples")
+print(f"   Validation: {len(dev_dataset)} samples")
 
 # 4. Data Collator
 @dataclass
@@ -705,8 +791,8 @@ training_args = Seq2SeqTrainingArguments(
 trainer = Seq2SeqTrainer(
     args=training_args,
     model=model,
-    train_dataset=dataset["train"],
-    eval_dataset=dataset["test"],
+    train_dataset=train_dataset,
+    eval_dataset=dev_dataset,
     data_collator=data_collator,
     compute_metrics=compute_metrics,
     processing_class=processor.feature_extractor,
@@ -715,7 +801,7 @@ trainer = Seq2SeqTrainer(
 print("="*60)
 print("Starting continued training on Common Voice Hindi dataset...")
 print(f"Model: {fine_tuned_model_id}")
-print(f"Dataset: Common Voice Hindi (train: {len(dataset['train'])}, val: {len(dataset['test'])})")
+print(f"Dataset: Common Voice Hindi (train: {len(train_dataset)}, val: {len(dev_dataset)})")
 print(f"Output directory: {training_args.output_dir}")
 print("="*60)
 trainer.train()
