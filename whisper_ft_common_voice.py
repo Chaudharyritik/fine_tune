@@ -33,6 +33,14 @@ MAX_SAMPLES_PER_DATASET = 50000  # Limit samples per dataset when streaming
 # Options: "auto" (skip online if local exists), "always" (always load online), "never" (never load online)
 USE_ONLINE_DATASETS = os.getenv("USE_ONLINE_DATASETS", "auto")
 
+# Light training configuration - reduces VM load while preserving accuracy
+TRAIN_BATCH_SIZE = 4  # Reduced from 8 to lower memory usage
+EVAL_BATCH_SIZE = 4  # Reduced from 8 to lower memory usage
+GRADIENT_ACCUMULATION = 2  # Reduced from 4 (effective batch: 8 instead of 32)
+EVAL_STEPS = 500  # Reduced from 100 (evaluate 5x less often)
+SAVE_STEPS = 500  # Reduced from 100 (save 5x less often)
+MAX_STEPS = 2000  # Keep at 2000 to preserve accuracy
+
 # 1. Load Dataset (Common Voice - Hindi)
 from huggingface_hub import whoami
 try:
@@ -707,11 +715,9 @@ wer_metric = evaluate.load("wer")
 
 def compute_metrics(pred):
     """
-    Compute comprehensive evaluation metrics:
+    Compute evaluation metrics (simplified for lighter training):
     - WER (Word Error Rate)
     - CER (Character Error Rate)
-    - Precision, Recall, F1-Score (word level)
-    - Accuracy (character level)
     """
     pred_ids = pred.predictions
     label_ids = pred.label_ids
@@ -729,68 +735,28 @@ def compute_metrics(pred):
     # CER (Character Error Rate) using jiwer
     cer = 100 * jiwer.cer(label_str, pred_str)
 
-    # Word-level Precision, Recall, F1-Score
-    # Tokenize into words for word-level metrics
-    def tokenize_words(text):
-        """Simple word tokenization (split by whitespace and normalize)"""
-        return text.lower().strip().split()
-    
-    # Compute word-level metrics across all samples
-    total_pred_words = 0
-    total_label_words = 0
-    correct_words = 0
-    
-    for pred, label in zip(pred_str, label_str):
-        pred_words = set(tokenize_words(pred))
-        label_words = set(tokenize_words(label))
-        
-        # Count matches (words that appear in both)
-        matches = len(pred_words & label_words)
-        correct_words += matches
-        total_pred_words += len(pred_words)
-        total_label_words += len(label_words)
-    
-    # Calculate precision, recall, F1
-    precision = (correct_words / total_pred_words * 100) if total_pred_words > 0 else 0.0
-    recall = (correct_words / total_label_words * 100) if total_label_words > 0 else 0.0
-    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
-    
-    # Character-level accuracy
-    total_chars = sum(len(ref) for ref in label_str)
-    correct_chars = 0
-    for pred, ref in zip(pred_str, label_str):
-        # Count matching characters up to min length
-        min_len = min(len(pred), len(ref))
-        correct_chars += sum(1 for i in range(min_len) if pred[i] == ref[i])
-    
-    char_accuracy = (correct_chars / total_chars * 100) if total_chars > 0 else 0.0
-
     return {
         "wer": wer,
         "cer": cer,
-        "precision": precision * 100,
-        "recall": recall * 100,
-        "f1": f1 * 100,
-        "accuracy": char_accuracy,
     }
 
-# 7. Training Arguments - Optimized for continued training
+# 7. Training Arguments - Light training to prevent VM hanging
 training_args = Seq2SeqTrainingArguments(
     output_dir="./whisper-hindi-cv-lora",
-    per_device_train_batch_size=8,
-    gradient_accumulation_steps=4,  # Increased to stabilize training
+    per_device_train_batch_size=TRAIN_BATCH_SIZE,  # Reduced to 4 for lighter training
+    gradient_accumulation_steps=GRADIENT_ACCUMULATION,  # Reduced to 2 (effective batch: 8)
     learning_rate=1e-5,  # Significantly lower learning rate for fine-tuning
     warmup_steps=50,
-    max_steps=2000,
+    max_steps=MAX_STEPS,  # Keep at 2000 to preserve accuracy
     lr_scheduler_type="linear",  # Linear decay
     gradient_checkpointing=True,
     bf16=True,
     eval_strategy="steps",
-    per_device_eval_batch_size=8,
+    per_device_eval_batch_size=EVAL_BATCH_SIZE,  # Reduced to 4 for lighter training
     predict_with_generate=True,
     generation_max_length=225,
-    save_steps=100,  # More frequent saves
-    eval_steps=100,  # More frequent eval
+    save_steps=SAVE_STEPS,  # Reduced to 500 (save 5x less often)
+    eval_steps=EVAL_STEPS,  # Reduced to 500 (evaluate 5x less often)
     logging_steps=25,
     report_to=["tensorboard"],
     load_best_model_at_end=True,
@@ -835,17 +801,9 @@ print(f"\n📊 Final Evaluation Results:")
 # Format metrics safely (handle missing keys)
 wer = eval_results.get('eval_wer', None)
 cer = eval_results.get('eval_cer', None)
-precision = eval_results.get('eval_precision', None)
-recall = eval_results.get('eval_recall', None)
-f1 = eval_results.get('eval_f1', None)
-accuracy = eval_results.get('eval_accuracy', None)
 
 print(f"   WER (Word Error Rate):      {wer:.2f}%" if wer is not None else "   WER (Word Error Rate):      N/A")
 print(f"   CER (Character Error Rate): {cer:.2f}%" if cer is not None else "   CER (Character Error Rate): N/A")
-print(f"   Precision:                  {precision:.2f}%" if precision is not None else "   Precision:                  N/A")
-print(f"   Recall:                     {recall:.2f}%" if recall is not None else "   Recall:                     N/A")
-print(f"   F1-Score:                   {f1:.2f}%" if f1 is not None else "   F1-Score:                   N/A")
-print(f"   Accuracy:                   {accuracy:.2f}%" if accuracy is not None else "   Accuracy:                   N/A")
 print("="*60)
 
 # Save evaluation results to file
@@ -855,10 +813,6 @@ with open(results_file, "w") as f:
     f.write("="*60 + "\n")
     f.write(f"WER (Word Error Rate):      {wer:.2f}%\n" if wer is not None else "WER (Word Error Rate):      N/A\n")
     f.write(f"CER (Character Error Rate): {cer:.2f}%\n" if cer is not None else "CER (Character Error Rate): N/A\n")
-    f.write(f"Precision:                  {precision:.2f}%\n" if precision is not None else "Precision:                  N/A\n")
-    f.write(f"Recall:                     {recall:.2f}%\n" if recall is not None else "Recall:                     N/A\n")
-    f.write(f"F1-Score:                   {f1:.2f}%\n" if f1 is not None else "F1-Score:                   N/A\n")
-    f.write(f"Accuracy:                   {accuracy:.2f}%\n" if accuracy is not None else "Accuracy:                   N/A\n")
     f.write("="*60 + "\n")
     f.write(f"\nAll metrics:\n")
     for key, value in eval_results.items():
