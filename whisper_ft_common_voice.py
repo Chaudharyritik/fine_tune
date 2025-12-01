@@ -73,38 +73,6 @@ def is_valid_sample(audio_path: Optional[str] = None, audio_array: Optional[np.n
     
     return True
 
-def filter_invalid_samples(dataset: Dataset, audio_col: str = "audio", text_col: str = "sentence") -> Dataset:
-    """
-    Filter out invalid samples from dataset.
-    Returns filtered dataset and reports statistics.
-    """
-    original_size = len(dataset)
-    
-    def validate_sample(example):
-        audio = example.get(audio_col)
-        text = example.get(text_col) or example.get("transcription") or example.get("text")
-        
-        audio_array = None
-        sampling_rate = None
-        if audio is not None:
-            if isinstance(audio, dict):
-                audio_array = audio.get("array")
-                sampling_rate = audio.get("sampling_rate")
-            elif isinstance(audio, str):
-                # For local dataset, audio might be a path
-                return is_valid_sample(audio_path=audio, transcription=text)
-        
-        return is_valid_sample(audio_array=audio_array, sampling_rate=sampling_rate, transcription=text)
-    
-    filtered_dataset = dataset.filter(validate_sample, num_proc=1)
-    filtered_size = len(filtered_dataset)
-    removed = original_size - filtered_size
-    removal_pct = (removed / original_size * 100) if original_size > 0 else 0
-    
-    print(f"  Filtered dataset: {original_size} -> {filtered_size} samples (removed {removed}, {removal_pct:.1f}%)")
-    
-    return filtered_dataset
-
 def load_local_common_voice_split(cv_path: str, split: str = "train") -> Optional[Dataset]:
     """
     Load a specific split from local Common Voice dataset.
@@ -587,12 +555,8 @@ train_dataset = train_dataset.map(
     load_from_cache_file=False  # Don't cache to save disk space
 )
 
-# Filter out samples with empty features
-train_dataset = train_dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
-train_filtered_size = len(train_dataset)
-train_removed = original_train_size - train_filtered_size
-train_removal_pct = (train_removed / original_train_size * 100) if original_train_size > 0 else 0
-print(f"  Training preprocessing: {original_train_size} -> {train_filtered_size} samples (removed {train_removed}, {train_removal_pct:.1f}%)")
+# Skip filtering - datasets are already quality-checked
+# train_dataset = train_dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
 
 print("\nPreprocessing validation dataset...")
 original_dev_size = len(dev_dataset)
@@ -607,12 +571,8 @@ dev_dataset = dev_dataset.map(
     load_from_cache_file=False
 )
 
-# Filter out samples with empty features
-dev_dataset = dev_dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
-dev_filtered_size = len(dev_dataset)
-dev_removed = original_dev_size - dev_filtered_size
-dev_removal_pct = (dev_removed / original_dev_size * 100) if original_dev_size > 0 else 0
-print(f"  Validation preprocessing: {original_dev_size} -> {dev_filtered_size} samples (removed {dev_removed}, {dev_removal_pct:.1f}%)")
+# Skip filtering - datasets are already quality-checked
+# dev_dataset = dev_dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
 
 # Force garbage collection after preprocessing
 gc.collect()
