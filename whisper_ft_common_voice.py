@@ -16,6 +16,7 @@ import os
 import pandas as pd
 import soundfile as sf
 import numpy as np
+import gc
 
 # Configuration
 LOCAL_CV_PATH = os.getenv("LOCAL_CV_PATH", "/home/fine_tune/cv-corpus-23.0-2025-09-05/hi")
@@ -23,6 +24,10 @@ MIN_AUDIO_DURATION = 0.1  # seconds
 MAX_AUDIO_DURATION = 30.0  # seconds
 MIN_TRANSCRIPTION_LENGTH = 1  # characters
 MAX_TRANSCRIPTION_LENGTH = 500  # characters
+
+# Memory optimization settings
+MAX_DATASETS_TO_LOAD = 2  # Limit number of datasets to prevent memory issues
+MAX_SAMPLES_PER_DATASET = 50000  # Limit samples per dataset when streaming
 
 # 1. Load Dataset (Common Voice - Hindi)
 from huggingface_hub import whoami
@@ -134,48 +139,50 @@ def load_local_common_voice(cv_path: str) -> Optional[Dataset]:
             print(f"Clips directory not found: {clips_dir}")
             return None
         
-        # Build dataset structure
+        # Build dataset structure - OPTIMIZED: Don't load audio into memory
+        # Only store paths and metadata, let Audio() handle loading lazily
         data = []
         valid_count = 0
         invalid_count = 0
+        
+        print(f"  Processing {len(df)} samples (lazy loading audio)...")
         
         for idx, row in df.iterrows():
             audio_filename = row["path"]
             transcription = str(row["sentence"]).strip()
             audio_path = os.path.join(clips_dir, audio_filename)
             
-            # Quick validation before loading
+            # Quick validation - only check file exists and transcription
             if not is_valid_sample(audio_path=audio_path, transcription=transcription):
                 invalid_count += 1
                 continue
             
-            # Try to load audio to verify it's valid
-            try:
-                audio_data, sr = sf.read(audio_path)
-                duration = len(audio_data) / sr
-                
-                if is_valid_sample(audio_array=audio_data, sampling_rate=sr, transcription=transcription):
-                    data.append({
-                        "path": audio_path,
-                        "audio": {"path": audio_path, "array": audio_data, "sampling_rate": sr},
-                        "sentence": transcription
-                    })
-                    valid_count += 1
-                else:
-                    invalid_count += 1
-            except Exception as e:
-                invalid_count += 1
-                if idx < 10:  # Log first few errors
-                    print(f"  Warning: Could not load {audio_filename}: {e}")
+            # Store only path - Audio() will load lazily when needed
+            # This prevents loading all audio files into memory at once
+            data.append({
+                "path": audio_path,
+                "audio": audio_path,  # Store path only, not the array
+                "sentence": transcription
+            })
+            valid_count += 1
+            
+            # Progress indicator for large datasets
+            if (idx + 1) % 10000 == 0:
+                print(f"    Processed {idx + 1}/{len(df)} samples...")
         
         if len(data) == 0:
             print(f"No valid samples found in local dataset")
             return None
         
-        print(f"  Loaded {valid_count} valid samples, skipped {invalid_count} invalid samples")
+        print(f"  Found {valid_count} valid samples, skipped {invalid_count} invalid samples")
         
         # Create HuggingFace Dataset
         dataset = Dataset.from_list(data)
+        
+        # Cast audio column - this will load audio lazily when accessed
+        # Audio() will handle resampling and loading on-demand
+        dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
+        
         return dataset
         
     except Exception as e:
@@ -196,11 +203,12 @@ print("="*60)
 local_dataset = load_local_common_voice(LOCAL_CV_PATH)
 if local_dataset is not None:
     print(f"✅ Loaded local dataset: {len(local_dataset)} samples")
-    # Cast audio column
-    local_dataset = local_dataset.cast_column("audio", Audio(sampling_rate=16000))
-    # Apply validation filtering
+    # Note: Audio casting is now done inside load_local_common_voice()
+    # Apply validation filtering (lightweight - only checks paths and text)
     local_dataset = filter_invalid_samples(local_dataset)
     loaded_datasets.append(("local_cv_23.0", local_dataset))
+    # Force garbage collection after loading
+    gc.collect()
 else:
     print("⚠️  Local dataset not available, continuing with online datasets only")
 
@@ -215,7 +223,7 @@ dataset_configs = [
         "name": "fixie-ai/common_voice_17_0",
         "config": "hi",
         "split": "train",
-        "streaming": False,
+        "streaming": True,  # OPTIMIZED: Use streaming to avoid loading into memory
         "trust_remote_code": True,
         "verification_mode": "no_checks"
     },
@@ -224,7 +232,7 @@ dataset_configs = [
         "name": "mozilla-foundation/common_voice_11_0",
         "config": "hi",
         "split": "train",
-        "streaming": False,
+        "streaming": True,  # OPTIMIZED: Use streaming
         "trust_remote_code": True
     },
     # 3. IndicVoices (Correct capitalization is important)
@@ -232,7 +240,7 @@ dataset_configs = [
         "name": "ai4bharat/IndicVoices",
         "config": "hi",
         "split": "train",
-        "streaming": False,
+        "streaming": True,  # OPTIMIZED: Use streaming
         "trust_remote_code": True
     },
     # 4. Kathbath (Indian Accented Noisy Dataset)
@@ -240,12 +248,17 @@ dataset_configs = [
         "name": "ai4bharat/kathbath",
         "config": "hindi",
         "split": "train",
-        "streaming": False,
+        "streaming": True,  # OPTIMIZED: Use streaming
         "trust_remote_code": True
     }
 ]
 
 for config in dataset_configs:
+    # Limit number of datasets to prevent memory issues
+    if len(loaded_datasets) >= MAX_DATASETS_TO_LOAD:
+        print(f"\n⚠️  Reached maximum dataset limit ({MAX_DATASETS_TO_LOAD}), skipping remaining datasets")
+        break
+    
     try:
         dataset_name = config["name"]
         lang_code = config["config"]
@@ -266,10 +279,24 @@ for config in dataset_configs:
         
         online_dataset = load_dataset(dataset_name, lang_code, **load_kwargs)
         
-        # If streaming, convert to regular dataset
+        # If streaming, convert to regular dataset with limit
         if streaming:
-            print("Streaming mode detected. Converting to regular dataset...")
-            online_dataset = online_dataset.take(50000)
+            print(f"Streaming mode: Collecting first {MAX_SAMPLES_PER_DATASET} samples...")
+            # Collect samples from streaming dataset
+            collected_samples = []
+            for i, sample in enumerate(online_dataset):
+                if i >= MAX_SAMPLES_PER_DATASET:
+                    break
+                collected_samples.append(sample)
+                if (i + 1) % 10000 == 0:
+                    print(f"    Collected {i + 1}/{MAX_SAMPLES_PER_DATASET} samples...")
+            
+            # Create regular dataset from collected samples
+            online_dataset = Dataset.from_list(collected_samples)
+            del collected_samples  # Free memory
+            gc.collect()
+            
+            # Cast audio column
             online_dataset = online_dataset.cast_column("audio", Audio(sampling_rate=16000))
         else:
             # Cast audio column
@@ -281,6 +308,9 @@ for config in dataset_configs:
         online_dataset = filter_invalid_samples(online_dataset)
         
         loaded_datasets.append((dataset_name, online_dataset))
+        
+        # Force garbage collection after each dataset
+        gc.collect()
         
     except Exception as e:
         print(f"❌ Failed to load {dataset_name}: {str(e)[:200]}...")
@@ -304,6 +334,7 @@ if len(loaded_datasets) == 0:
     raise RuntimeError("Failed to load any Hindi dataset.")
 
 # Concatenate all datasets
+print("Concatenating datasets (this may take a moment)...")
 datasets_to_merge = [ds for _, ds in loaded_datasets]
 dataset = concatenate_datasets(datasets_to_merge)
 
@@ -311,6 +342,10 @@ print(f"✅ Combined {len(loaded_datasets)} datasets:")
 for name, ds in loaded_datasets:
     print(f"   - {name}: {len(ds)} samples")
 print(f"   Total: {len(dataset)} samples")
+
+# Free memory from individual datasets
+del datasets_to_merge
+gc.collect()
 
 # 4. Final validation pass and shuffle
 print("\n" + "="*60)
@@ -440,15 +475,21 @@ def prepare_dataset_wrapper(examples):
             return {"input_features": [], "labels": []}
         return result
 
-# Apply preprocessing
+# Apply preprocessing with memory optimization
+print("Preprocessing dataset (this may take a while)...")
 dataset = dataset.map(
     prepare_dataset_wrapper,
     remove_columns=dataset.column_names,
     num_proc=1,
     batched=True,
     batch_size=100,
-    desc="Preprocessing"
+    writer_batch_size=1000,  # OPTIMIZED: Write to disk in batches to free memory
+    desc="Preprocessing",
+    load_from_cache_file=False  # Don't cache to save disk space
 )
+
+# Force garbage collection after preprocessing
+gc.collect()
 
 # Filter out samples with empty features
 dataset = dataset.filter(lambda x: len(x.get("input_features", [])) > 0 and len(x.get("labels", [])) > 0)
