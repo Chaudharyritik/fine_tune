@@ -29,6 +29,10 @@ MAX_TRANSCRIPTION_LENGTH = 500  # characters
 MAX_DATASETS_TO_LOAD = 2  # Limit number of datasets to prevent memory issues
 MAX_SAMPLES_PER_DATASET = 50000  # Limit samples per dataset when streaming
 
+# Dataset loading configuration
+# Options: "auto" (skip online if local exists), "always" (always load online), "never" (never load online)
+USE_ONLINE_DATASETS = os.getenv("USE_ONLINE_DATASETS", "auto")
+
 # 1. Load Dataset (Common Voice - Hindi)
 from huggingface_hub import whoami
 try:
@@ -190,8 +194,8 @@ def load_local_common_voice(cv_path: str) -> Optional[Dataset]:
         return None
 
 print("Loading Hindi dataset for training...")
-# Try multiple datasets: Common Voice and Indic-Voices
-# Common Voice may require accepting terms at: https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0
+# Priority: Use local Mozilla Common Voice dataset if available
+# Online datasets will only be loaded if local dataset fails or USE_ONLINE_DATASETS is set to "always"
 
 # Load all available datasets (local + online)
 loaded_datasets = []
@@ -201,21 +205,37 @@ print("="*60)
 print("Step 1: Loading local Common Voice dataset...")
 print("="*60)
 local_dataset = load_local_common_voice(LOCAL_CV_PATH)
+local_dataset_loaded = False
 if local_dataset is not None:
     print(f"✅ Loaded local dataset: {len(local_dataset)} samples")
     # Note: Audio casting is now done inside load_local_common_voice()
     # Apply validation filtering (lightweight - only checks paths and text)
     local_dataset = filter_invalid_samples(local_dataset)
     loaded_datasets.append(("local_cv_23.0", local_dataset))
+    local_dataset_loaded = True
     # Force garbage collection after loading
     gc.collect()
 else:
     print("⚠️  Local dataset not available, continuing with online datasets only")
 
-# 2. Load online datasets
-print("\n" + "="*60)
-print("Step 2: Loading online datasets...")
-print("="*60)
+# 2. Load online datasets (only if needed)
+should_load_online = (
+    USE_ONLINE_DATASETS == "always" or 
+    (USE_ONLINE_DATASETS != "never" and not local_dataset_loaded)
+)
+
+if not should_load_online and local_dataset_loaded:
+    print("\n" + "="*60)
+    print("Step 2: Skipping online datasets")
+    print("="*60)
+    print("✅ Using local Common Voice dataset only")
+    print(f"   Configuration: USE_ONLINE_DATASETS={USE_ONLINE_DATASETS}")
+    print("   (Set USE_ONLINE_DATASETS='always' to load online datasets)")
+    print("="*60)
+else:
+    print("\n" + "="*60)
+    print("Step 2: Loading online datasets...")
+    print("="*60)
 
 dataset_configs = [
     # 1. Fixie.ai's Parquet version of Common Voice 17.0 (Try ignoring verification)
@@ -253,7 +273,9 @@ dataset_configs = [
     }
 ]
 
-for config in dataset_configs:
+# Only load online datasets if should_load_online is True
+if should_load_online:
+    for config in dataset_configs:
     # Limit number of datasets to prevent memory issues
     if len(loaded_datasets) >= MAX_DATASETS_TO_LOAD:
         print(f"\n⚠️  Reached maximum dataset limit ({MAX_DATASETS_TO_LOAD}), skipping remaining datasets")
@@ -315,6 +337,8 @@ for config in dataset_configs:
     except Exception as e:
         print(f"❌ Failed to load {dataset_name}: {str(e)[:200]}...")
         continue
+else:
+    print("   (Skipped - using local dataset only)")
 
 # 3. Combine all datasets
 print("\n" + "="*60)
@@ -326,11 +350,18 @@ if len(loaded_datasets) == 0:
     print("ERROR: Could not load any Hindi dataset.")
     print("="*60)
     print("\nPossible solutions:")
-    print("1. Accept terms of use for Common Voice:")
-    print("   https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0")
-    print("2. Check if you're logged in: huggingface-cli login")
-    print("3. Verify local dataset path: " + LOCAL_CV_PATH)
-    print("4. Try alternative datasets like Indic-Voices")
+    if USE_ONLINE_DATASETS == "never":
+        print("1. Verify local dataset path: " + LOCAL_CV_PATH)
+        print("2. Check that the directory contains validated.tsv or train.tsv")
+        print("3. Ensure clips/ directory exists with audio files")
+    else:
+        print("1. Verify local dataset path: " + LOCAL_CV_PATH)
+        print("2. Check that the directory contains validated.tsv or train.tsv")
+        print("3. Ensure clips/ directory exists with audio files")
+        print("4. Or set USE_ONLINE_DATASETS='always' to load online datasets")
+        print("5. Accept terms of use for Common Voice:")
+        print("   https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0")
+        print("6. Check if you're logged in: huggingface-cli login")
     raise RuntimeError("Failed to load any Hindi dataset.")
 
 # Concatenate all datasets
