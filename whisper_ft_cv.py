@@ -77,18 +77,44 @@ def prepare_dataset(batch):
     batch["labels"] = processor.tokenizer(batch["transcription"]).input_ids
     return batch
 
-# Apply preprocessing
+# Apply preprocessing with aggressive memory management
 print("Preprocessing dataset...")
-# Remove columns to save space
 column_names = dataset["train"].column_names
-dataset = dataset.map(
-    prepare_dataset, 
-    remove_columns=column_names, 
-    num_proc=1,
-    batched=False, # Process one by one to save memory
-    writer_batch_size=100, # Write to disk frequently
-    keep_in_memory=False # Ensure data is written to disk
-)
+
+# Process each split separately and save to disk to clear memory
+processed_datasets = {}
+
+for split in dataset.keys():
+    print(f"Processing split: {split}")
+    # Select the split
+    split_ds = dataset[split]
+    
+    # Map with memory optimizations
+    processed_split = split_ds.map(
+        prepare_dataset, 
+        remove_columns=column_names, 
+        num_proc=1,
+        batched=False,
+        writer_batch_size=50, # Even smaller write batch
+        keep_in_memory=False,
+        load_from_cache_file=True # Use cache
+    )
+    
+    # Force save to disk and reload to free RAM
+    save_path = os.path.join(OUTPUT_DIR, f"processed_{split}")
+    processed_split.save_to_disk(save_path)
+    
+    # Clear memory
+    del split_ds
+    del processed_split
+    import gc
+    gc.collect()
+    
+    # Load back from disk
+    from datasets import load_from_disk
+    processed_datasets[split] = load_from_disk(save_path)
+
+dataset = DatasetDict(processed_datasets)
 
 # 4. Data Collator
 @dataclass
