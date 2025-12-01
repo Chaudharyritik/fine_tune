@@ -22,6 +22,17 @@ OUTPUT_DIR = "./whisper-hindi-cv-lora"
 
 def load_local_common_voice(cv_path):
     """Load Common Voice dataset from local directory."""
+    # Debug: Check if path exists
+    if not os.path.exists(cv_path):
+        print(f"❌ Error: CV_PATH does not exist: {cv_path}")
+        return DatasetDict()
+
+    print(f"Checking contents of {cv_path}...")
+    try:
+        print(f"Files: {os.listdir(cv_path)}")
+    except Exception as e:
+        print(f"Could not list directory: {e}")
+
     data = {}
     for split in ["train", "dev", "test"]:
         tsv_path = os.path.join(cv_path, f"{split}.tsv")
@@ -39,6 +50,9 @@ def load_local_common_voice(cv_path):
         ds = Dataset.from_pandas(df)
         ds = ds.cast_column("audio", Audio(sampling_rate=16000))
         data[split] = ds
+    
+    if "train" not in data:
+        raise ValueError(f"❌ Failed to load 'train' split from {cv_path}. Please check the path.")
         
     return DatasetDict(data)
 
@@ -67,7 +81,14 @@ def prepare_dataset(batch):
 print("Preprocessing dataset...")
 # Remove columns to save space
 column_names = dataset["train"].column_names
-dataset = dataset.map(prepare_dataset, remove_columns=column_names, num_proc=1)
+dataset = dataset.map(
+    prepare_dataset, 
+    remove_columns=column_names, 
+    num_proc=1,
+    batched=False, # Process one by one to save memory
+    writer_batch_size=100, # Write to disk frequently
+    keep_in_memory=False # Ensure data is written to disk
+)
 
 # 4. Data Collator
 @dataclass
