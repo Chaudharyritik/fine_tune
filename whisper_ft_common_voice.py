@@ -694,3 +694,44 @@ print("Training completed!")
 print(f"Best model saved to: {training_args.output_dir}")
 print("="*60)
 
+# Final evaluation on validation set
+print("\n" + "="*60)
+print("Running final evaluation on validation set...")
+print("="*60)
+eval_results = trainer.evaluate()
+print(f"\n📊 Final Evaluation Results:")
+# Format metrics safely (handle missing keys)
+wer = eval_results.get('eval_wer', None)
+cer = eval_results.get('eval_cer', None)
+precision = eval_results.get('eval_precision', None)
+recall = eval_results.get('eval_recall', None)
+f1 = eval_results.get('eval_f1', None)
+accuracy = eval_results.get('eval_accuracy', None)
+
+print(f"   WER (Word Error Rate):      {wer:.2f}%" if wer is not None else "   WER (Word Error Rate):      N/A")
+print(f"   CER (Character Error Rate): {cer:.2f}%" if cer is not None else "   CER (Character Error Rate): N/A")
+print(f"   Precision:                  {precision:.2f}%" if precision is not None else "   Precision:                  N/A")
+print(f"   Recall:                     {recall:.2f}%" if recall is not None else "   Recall:                     N/A")
+print(f"   F1-Score:                   {f1:.2f}%" if f1 is not None else "   F1-Score:                   N/A")
+print(f"   Accuracy:                   {accuracy:.2f}%" if accuracy is not None else "   Accuracy:                   N/A")
+print("="*60)
+
+# Save evaluation results to file
+results_file = os.path.join(training_args.output_dir, "final_evaluation_results.txt")
+with open(results_file, "w") as f:
+    f.write("Final Evaluation Results\n")
+    f.write("="*60 + "\n")
+    f.write(f"WER (Word Error Rate):      {wer:.2f}%\n" if wer is not None else "WER (Word Error Rate):      N/A\n")
+    f.write(f"CER (Character Error Rate): {cer:.2f}%\n" if cer is not None else "CER (Character Error Rate): N/A\n")
+    f.write(f"Precision:                  {precision:.2f}%\n" if precision is not None else "Precision:                  N/A\n")
+    f.write(f"Recall:                     {recall:.2f}%\n" if recall is not None else "Recall:                     N/A\n")
+    f.write(f"F1-Score:                   {f1:.2f}%\n" if f1 is not None else "F1-Score:                   N/A\n")
+    f.write(f"Accuracy:                   {accuracy:.2f}%\n" if accuracy is not None else "Accuracy:                   N/A\n")
+    f.write("="*60 + "\n")
+    f.write(f"\nAll metrics:\n")
+    for key, value in eval_results.items():
+        f.write(f"  {key}: {value}\n")
+
+print(f"\n✅ Evaluation results saved to: {results_file}")
+print("="*60)
+
