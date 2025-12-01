@@ -276,67 +276,67 @@ dataset_configs = [
 # Only load online datasets if should_load_online is True
 if should_load_online:
     for config in dataset_configs:
-    # Limit number of datasets to prevent memory issues
-    if len(loaded_datasets) >= MAX_DATASETS_TO_LOAD:
-        print(f"\n⚠️  Reached maximum dataset limit ({MAX_DATASETS_TO_LOAD}), skipping remaining datasets")
-        break
-    
-    try:
-        dataset_name = config["name"]
-        lang_code = config["config"]
-        streaming = config.get("streaming", False)
-        trust_remote = config.get("trust_remote_code", True)
-        verification_mode = config.get("verification_mode", None)
+        # Limit number of datasets to prevent memory issues
+        if len(loaded_datasets) >= MAX_DATASETS_TO_LOAD:
+            print(f"\n⚠️  Reached maximum dataset limit ({MAX_DATASETS_TO_LOAD}), skipping remaining datasets")
+            break
         
-        print(f"\nTrying to load: {dataset_name} (language: {lang_code})...")
-        
-        load_kwargs = {
-            "split": config["split"],
-            "trust_remote_code": trust_remote
-        }
-        if streaming:
-            load_kwargs["streaming"] = True
-        if verification_mode:
-            load_kwargs["verification_mode"] = verification_mode
-        
-        online_dataset = load_dataset(dataset_name, lang_code, **load_kwargs)
-        
-        # If streaming, convert to regular dataset with limit
-        if streaming:
-            print(f"Streaming mode: Collecting first {MAX_SAMPLES_PER_DATASET} samples...")
-            # Collect samples from streaming dataset
-            collected_samples = []
-            for i, sample in enumerate(online_dataset):
-                if i >= MAX_SAMPLES_PER_DATASET:
-                    break
-                collected_samples.append(sample)
-                if (i + 1) % 10000 == 0:
-                    print(f"    Collected {i + 1}/{MAX_SAMPLES_PER_DATASET} samples...")
+        try:
+            dataset_name = config["name"]
+            lang_code = config["config"]
+            streaming = config.get("streaming", False)
+            trust_remote = config.get("trust_remote_code", True)
+            verification_mode = config.get("verification_mode", None)
             
-            # Create regular dataset from collected samples
-            online_dataset = Dataset.from_list(collected_samples)
-            del collected_samples  # Free memory
+            print(f"\nTrying to load: {dataset_name} (language: {lang_code})...")
+            
+            load_kwargs = {
+                "split": config["split"],
+                "trust_remote_code": trust_remote
+            }
+            if streaming:
+                load_kwargs["streaming"] = True
+            if verification_mode:
+                load_kwargs["verification_mode"] = verification_mode
+            
+            online_dataset = load_dataset(dataset_name, lang_code, **load_kwargs)
+            
+            # If streaming, convert to regular dataset with limit
+            if streaming:
+                print(f"Streaming mode: Collecting first {MAX_SAMPLES_PER_DATASET} samples...")
+                # Collect samples from streaming dataset
+                collected_samples = []
+                for i, sample in enumerate(online_dataset):
+                    if i >= MAX_SAMPLES_PER_DATASET:
+                        break
+                    collected_samples.append(sample)
+                    if (i + 1) % 10000 == 0:
+                        print(f"    Collected {i + 1}/{MAX_SAMPLES_PER_DATASET} samples...")
+                
+                # Create regular dataset from collected samples
+                online_dataset = Dataset.from_list(collected_samples)
+                del collected_samples  # Free memory
+                gc.collect()
+                
+                # Cast audio column
+                online_dataset = online_dataset.cast_column("audio", Audio(sampling_rate=16000))
+            else:
+                # Cast audio column
+                online_dataset = online_dataset.cast_column("audio", Audio(sampling_rate=16000))
+            
+            print(f"✅ Successfully loaded: {dataset_name} ({len(online_dataset)} samples)")
+            
+            # Apply validation filtering
+            online_dataset = filter_invalid_samples(online_dataset)
+            
+            loaded_datasets.append((dataset_name, online_dataset))
+            
+            # Force garbage collection after each dataset
             gc.collect()
             
-            # Cast audio column
-            online_dataset = online_dataset.cast_column("audio", Audio(sampling_rate=16000))
-        else:
-            # Cast audio column
-            online_dataset = online_dataset.cast_column("audio", Audio(sampling_rate=16000))
-        
-        print(f"✅ Successfully loaded: {dataset_name} ({len(online_dataset)} samples)")
-        
-        # Apply validation filtering
-        online_dataset = filter_invalid_samples(online_dataset)
-        
-        loaded_datasets.append((dataset_name, online_dataset))
-        
-        # Force garbage collection after each dataset
-        gc.collect()
-        
-    except Exception as e:
-        print(f"❌ Failed to load {dataset_name}: {str(e)[:200]}...")
-        continue
+        except Exception as e:
+            print(f"❌ Failed to load {dataset_name}: {str(e)[:200]}...")
+            continue
 else:
     print("   (Skipped - using local dataset only)")
 
