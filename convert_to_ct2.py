@@ -1,6 +1,6 @@
 import os
 import shutil
-from ct2_transformers_converter.converters import TransformersConverter
+from ctranslate2.converters import TransformersConverter
 
 # Configuration
 MODEL_PATH = "./whisper-hindi-cv-merged"
