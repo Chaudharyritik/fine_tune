@@ -62,7 +62,7 @@ def main():
         audio_array, 
         sampling_rate=sampling_rate, 
         return_tensors="pt"
-    ).input_features.to(model.device)
+    ).input_features.to(model.device).to(torch.float16)
     
     with torch.no_grad():
         generated_ids = model.generate(input_features, language=LANGUAGE)
