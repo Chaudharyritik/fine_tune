@@ -193,19 +193,20 @@ def compute_metrics(pred):
 # 7. Training Arguments
 training_args = Seq2SeqTrainingArguments(
     output_dir=OUTPUT_DIR,
-    per_device_train_batch_size=4, # Reduced for stability
-    gradient_accumulation_steps=2,
-    learning_rate=1e-5, # Lower LR for further fine-tuning
-    warmup_steps=50,
-    max_steps=1000, 
+    per_device_train_batch_size=4, # Keep at 4 to prevent OOM
+    gradient_accumulation_steps=4, # Increase to 4 -> Effective batch size = 16
+    learning_rate=1e-5, 
+    warmup_steps=100,
+    num_train_epochs=5, # Train for 5 full epochs
+    # max_steps=1000, # Removed in favor of epochs
     gradient_checkpointing=True,
     bf16=True, 
     eval_strategy="steps",
     per_device_eval_batch_size=4,
     predict_with_generate=True,
     generation_max_length=225,
-    save_steps=200,
-    eval_steps=200,
+    save_steps=500,
+    eval_steps=500,
     logging_steps=50,
     report_to=["tensorboard"],
     load_best_model_at_end=True,
@@ -214,6 +215,7 @@ training_args = Seq2SeqTrainingArguments(
     push_to_hub=False,
     remove_unused_columns=False, 
     label_names=["labels"], 
+    save_total_limit=3, # Keep only last 3 checkpoints
 )
 
 # 8. Trainer
