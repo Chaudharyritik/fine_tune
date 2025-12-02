@@ -1,4 +1,5 @@
 import os
+import datetime
 import torch
 import pandas as pd
 from datasets import Dataset, Audio, DatasetDict
@@ -18,7 +19,9 @@ from typing import Any, Dict, List, Union
 DEFAULT_CV_PATH = "/Users/jaidratsingh/Downloads/cv-corpus-23.0-2025-09-05/hi"
 CV_PATH = os.getenv("CV_PATH", DEFAULT_CV_PATH)
 MODEL_ID = "chaudharyritik1/whisper-hindi-v1"
-OUTPUT_DIR = "./whisper-hindi-cv-lora"
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_DIR = f"./whisper-hindi-cv-lora_{timestamp}"
+print(f"Output directory set to: {OUTPUT_DIR}")
 
 def load_local_common_voice(cv_path):
     """Load Common Voice dataset from local directory."""
