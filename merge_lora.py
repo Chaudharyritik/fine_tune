@@ -5,7 +5,7 @@ import os
 
 # Configuration
 BASE_MODEL_ID = "chaudharyritik1/whisper-hindi-v1"
-LORA_OUTPUT_DIR = "./whisper-hindi-cv-lora"
+LORA_OUTPUT_DIR = os.getenv("LORA_OUTPUT_DIR", "./whisper-hindi-cv-lora")
 MERGED_OUTPUT_DIR = "./whisper-hindi-cv-merged"
 
 def merge_model():
