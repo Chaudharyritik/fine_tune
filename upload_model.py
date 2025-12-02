@@ -10,12 +10,19 @@ def push_to_hub():
     
     # 1. Login
     print("\n🔑 Authentication")
+    token = os.getenv("HF_TOKEN")
     try:
-        api = HfApi()
+        if token:
+            login(token=token)
+            api = HfApi(token=token)
+        else:
+            api = HfApi()
+            
         user = api.whoami()
         print(f"✅ Logged in as: {user['name']}")
-    except:
-        print("⚠️ Not logged in. Please run 'huggingface-cli login' first.")
+    except Exception as e:
+        print(f"⚠️ Login failed: {e}")
+        print("Tip: Run 'huggingface-cli login' or set HF_TOKEN environment variable.")
         return
 
     # 2. Create Repo
