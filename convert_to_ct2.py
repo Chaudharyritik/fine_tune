@@ -17,7 +17,7 @@ def convert_to_ct2():
         shutil.rmtree(CT2_OUTPUT_DIR)
 
     converter = TransformersConverter(
-        model_or_model_dir=MODEL_PATH,
+        model_name_or_path=MODEL_PATH,
         copy_files=["tokenizer.json", "preprocessor_config.json"],
     )
 
